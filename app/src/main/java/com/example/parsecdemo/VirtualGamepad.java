@@ -106,14 +106,25 @@ public final class VirtualGamepad extends FrameLayout {
 
     /** Overlay-level dispatch routes each pointer to the widget hit on DOWN
      *  and keeps it routed there until UP, so multi-touch (stick + face button)
-     *  works correctly even when the second touch lands inside another child. */
+     *  works correctly even when the second touch lands inside another child.
+     *  Touches that land in empty regions are forwarded through to the GL
+     *  surface beneath us — otherwise mouse input dies the moment the
+     *  gamepad is shown. */
     @Override
     public boolean onInterceptTouchEvent(MotionEvent ev) {
-        return true; // we'll dispatch manually
+        // External mice always pass through — they should go straight to the
+        // GL surface even when fingers are on the on-screen gamepad. The
+        // user has a hardware cursor and shouldn't have to dismiss the
+        // overlay to click.
+        if (isMouseSource(ev)) return false;
+        return true;
     }
 
     @Override
     public boolean onTouchEvent(MotionEvent ev) {
+        // Defensive: never absorb mouse events here.
+        if (isMouseSource(ev)) return false;
+
         int action = ev.getActionMasked();
         int idx = ev.getActionIndex();
         int pid = ev.getPointerId(idx);
@@ -126,27 +137,41 @@ public final class VirtualGamepad extends FrameLayout {
                 if (c != null) {
                     capture.put(pid, c);
                     c.widget.onDown(c.localX(x), c.localY(y));
+                    return true;
                 }
-                return true;
+                // Empty region — don't consume so the touch falls through to
+                // the GL surface / other overlays below.
+                return false;
             }
             case MotionEvent.ACTION_MOVE: {
+                boolean any = false;
                 for (int i = 0; i < ev.getPointerCount(); i++) {
                     int id = ev.getPointerId(i);
                     Capturing c = capture.get(id);
                     if (c == null) continue;
                     c.widget.onMove(c.localX(ev.getX(i)), c.localY(ev.getY(i)));
+                    any = true;
                 }
-                return true;
+                return any;
             }
             case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_POINTER_UP:
             case MotionEvent.ACTION_CANCEL: {
                 Capturing c = capture.remove(pid);
-                if (c != null) c.widget.onUp();
-                return true;
+                if (c != null) {
+                    c.widget.onUp();
+                    return true;
+                }
+                return false;
             }
         }
-        return true;
+        return false;
+    }
+
+    private static boolean isMouseSource(MotionEvent ev) {
+        int s = ev.getSource();
+        return (s & android.view.InputDevice.SOURCE_MOUSE) == android.view.InputDevice.SOURCE_MOUSE
+            || (s & android.view.InputDevice.SOURCE_MOUSE_RELATIVE) == android.view.InputDevice.SOURCE_MOUSE_RELATIVE;
     }
 
     private Capturing findChildAt(float x, float y) {

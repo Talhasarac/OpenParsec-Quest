@@ -2,6 +2,7 @@ package com.example.parsecdemo;
 
 import android.content.Context;
 import android.opengl.GLSurfaceView;
+import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
 
@@ -383,6 +384,11 @@ public class ClientGLSurface extends GLSurfaceView {
         super.onTouchEvent(ev);
         if (!parsecAlive) return true;
 
+        // External mouse / trackpad input (Bluetooth, USB, DeX, ChromeOS) —
+        // route to a dedicated handler so right-click + middle-click +
+        // wheel land on the right host buttons.
+        if (isMouseSource(ev)) return handleMouseTouchEvent(ev);
+
         // Zoom mode is opt-in via the FAB. When it's OFF, every touch flows
         // straight to the regular trackpad / direct handler — pinches become
         // scroll/touch events on the host, matching how a real precision
@@ -425,6 +431,75 @@ public class ClientGLSurface extends GLSurfaceView {
     }
 
     private float panLastCx = 0f, panLastCy = 0f;
+
+    /** Last-seen mouse button bitmask (BUTTON_PRIMARY, BUTTON_SECONDARY, ...).
+     *  We diff against the new state on each event so left→right transitions
+     *  generate one release + one press, never a stuck button. */
+    private int lastMouseButtons = 0;
+
+    @Override
+    public boolean onGenericMotionEvent(MotionEvent ev) {
+        if (!parsecAlive) return false;
+        if (!isMouseSource(ev)) return super.onGenericMotionEvent(ev);
+        int action = ev.getActionMasked();
+        if (action == MotionEvent.ACTION_HOVER_MOVE
+                || action == MotionEvent.ACTION_HOVER_ENTER
+                || action == MotionEvent.ACTION_HOVER_EXIT) {
+            // Hover with no buttons → absolute cursor motion.
+            sendAbsoluteMotionMapped(ev.getX(), ev.getY());
+            return true;
+        }
+        if (action == MotionEvent.ACTION_SCROLL) {
+            float vs = ev.getAxisValue(MotionEvent.AXIS_VSCROLL);
+            float hs = ev.getAxisValue(MotionEvent.AXIS_HSCROLL);
+            // Parsec wheel y is "positive = scroll down", Android VSCROLL is
+            // "positive = away from user = scroll up", so we invert.
+            int ticksY = Math.round(-vs);
+            int ticksX = Math.round(hs);
+            if (ticksY != 0 || ticksX != 0) {
+                sendWheel(scaledTick(ticksX), scaledTick(ticksY));
+            }
+            return true;
+        }
+        return super.onGenericMotionEvent(ev);
+    }
+
+    /** Handle a SOURCE_MOUSE touch event: position update + edge-triggered
+     *  button press/release. */
+    private boolean handleMouseTouchEvent(MotionEvent ev) {
+        // Position update — always (mouse moves while held = drag).
+        sendAbsoluteMotionMapped(ev.getX(), ev.getY());
+
+        int now = ev.getButtonState();
+        int changed = now ^ lastMouseButtons;
+        if (changed != 0) {
+            dispatchMouseButton(changed, now, MotionEvent.BUTTON_PRIMARY,
+                    1 /* MOUSE_L */);
+            dispatchMouseButton(changed, now, MotionEvent.BUTTON_SECONDARY,
+                    3 /* MOUSE_R */);
+            dispatchMouseButton(changed, now, MotionEvent.BUTTON_TERTIARY,
+                    2 /* MOUSE_MIDDLE */);
+            lastMouseButtons = now;
+        }
+        return true;
+    }
+
+    private void dispatchMouseButton(int changed, int now, int androidMask,
+                                     int parsecButton) {
+        if ((changed & androidMask) == 0) return;
+        boolean pressed = (now & androidMask) != 0;
+        synchronized (parsecLock) {
+            if (parsecAlive && parsec != null) {
+                parsec.clientSendMouseButton(parsecButton, pressed);
+            }
+        }
+    }
+
+    private static boolean isMouseSource(MotionEvent ev) {
+        int s = ev.getSource();
+        return (s & InputDevice.SOURCE_MOUSE) == InputDevice.SOURCE_MOUSE
+            || (s & InputDevice.SOURCE_MOUSE_RELATIVE) == InputDevice.SOURCE_MOUSE_RELATIVE;
+    }
 
     private boolean onDirectTouchEvent(MotionEvent ev) {
         int action = ev.getActionMasked();
