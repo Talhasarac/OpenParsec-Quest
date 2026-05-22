@@ -9,8 +9,8 @@ android {
         applicationId "com.example.parsecdemo"
         minSdkVersion 28
         targetSdkVersion 34
-        versionCode 15
-        versionName "0.1.15"
+        versionCode 16
+        versionName "0.1.16"
         externalNativeBuild {
             cmake {
                 abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86', 'x86_64'
@@ -20,12 +20,24 @@ android {
     buildFeatures {
         buildConfig true
     }
+    signingConfigs {
+        release {
+            // Stable shared keystore committed at the repo root so every
+            // release APK is signed with the SAME certificate. Without this
+            // each CI runner generated a fresh ~/.android/debug.keystore and
+            // released APKs failed update with INSTALL_FAILED_UPDATE_INCOMPATIBLE.
+            // The password is shared on purpose — this is the public sideload
+            // identity, not a production Play Store key.
+            storeFile file('../openparsec-release.keystore')
+            storePassword 'openparsec'
+            keyAlias 'openparsec'
+            keyPassword 'openparsec'
+        }
+    }
     buildTypes {
         release {
             minifyEnabled false
-            // Sign with debug key so users can install the APK directly from
-            // the GitHub Release without us shipping a private signing cert.
-            signingConfig signingConfigs.debug
+            signingConfig signingConfigs.release
         }
     }
     sourceSets.main {

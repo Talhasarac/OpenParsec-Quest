@@ -20,6 +20,11 @@ Thumbs.db
 # Credentials and local-only configuration. NEVER commit.
 .env
 .env.*
-*.keystore
 *.jks
 keystore.properties
+# Keystores generally don't belong in git, EXCEPT for our shared
+# openparsec-release.keystore which intentionally lives in the repo so
+# every CI build signs releases with the same identity (otherwise
+# Android refuses to update between APKs signed with different certs).
+*.keystore
+!openparsec-release.keystore
