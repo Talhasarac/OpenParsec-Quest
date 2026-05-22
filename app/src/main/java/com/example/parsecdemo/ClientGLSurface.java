@@ -76,6 +76,11 @@ public class ClientGLSurface extends GLSurfaceView {
      *  cross a scroll-tick threshold). Used to distinguish a two-finger TAP
      *  (right click on Win/Mac touchpads) from a two-finger drag. */
     private boolean twoFingerScrollFired = false;
+    /** Cursor position at the moment ACTION_DOWN fired. When a second finger
+     *  lands shortly after, we restore the cursor to this value so the brief
+     *  one-finger drift before the multi-touch gesture engaged doesn't move
+     *  the host mouse. */
+    private float gestureStartCursorX = 0f, gestureStartCursorY = 0f;
     private long twoFingerDownTime = 0L;
     private float twoFingerDownCentroidX = 0f;
     private float twoFingerDownCentroidY = 0f;
@@ -95,6 +100,11 @@ public class ClientGLSurface extends GLSurfaceView {
 
     /** Left button is currently held by direct-touch mode (1-finger drag). */
     private boolean directLeftHeld = false;
+    /** Direct-mode click is deferred briefly so a quick second finger can
+     *  cancel it (preventing a stray click+drag at the start of a 2-finger
+     *  scroll). Null when no pending click. */
+    private Runnable directPendingClick = null;
+    private static final long DIRECT_CLICK_DEFER_MS = 60L;
 
     // ----- Pinch zoom + pan (RustDesk-style, opt-in) -----
     /** Gating flag. When OFF (default), pinch / two-finger gestures pass
@@ -506,17 +516,30 @@ public class ClientGLSurface extends GLSurfaceView {
         int pointers = ev.getPointerCount();
         switch (action) {
             case MotionEvent.ACTION_DOWN: {
-                float x = ev.getX();
-                float y = ev.getY();
+                final float x = ev.getX();
+                final float y = ev.getY();
                 cursorX = x; cursorY = y;
-                sendAbsoluteMotionMapped(x, y);
-                sendButton(true);
-                directLeftHeld = true;
+                // Defer the actual click + position-send briefly so a quick
+                // second finger landing within DIRECT_CLICK_DEFER_MS can
+                // cancel it. Prevents a stray click+drag at the start of a
+                // 2-finger scroll gesture in direct mode.
+                cancelDirectPendingClick();
+                directPendingClick = () -> {
+                    if (directPendingClick == null) return;
+                    directPendingClick = null;
+                    sendAbsoluteMotionMapped(x, y);
+                    sendButton(true);
+                    directLeftHeld = true;
+                };
+                postDelayed(directPendingClick, DIRECT_CLICK_DEFER_MS);
                 return true;
             }
             case MotionEvent.ACTION_POINTER_DOWN: {
-                // Second finger joined — enter two-finger scroll mode. Release
-                // the left button so we don't drag-select while scrolling.
+                // Second finger joined — enter two-finger scroll mode. If a
+                // direct-mode click was still pending we cancel it cleanly so
+                // the host never sees the press. If it had already fired,
+                // release the held button so we don't drag-select.
+                cancelDirectPendingClick();
                 if (directLeftHeld) {
                     sendButton(false);
                     directLeftHeld = false;
@@ -527,7 +550,7 @@ public class ClientGLSurface extends GLSurfaceView {
             case MotionEvent.ACTION_MOVE: {
                 if (twoFingerScroll && pointers >= 2) {
                     updateTwoFingerScroll(ev);
-                } else if (!twoFingerScroll) {
+                } else if (!twoFingerScroll && directPendingClick == null) {
                     float x = ev.getX();
                     float y = ev.getY();
                     cursorX = x; cursorY = y;
@@ -547,11 +570,28 @@ public class ClientGLSurface extends GLSurfaceView {
                 } else if (directLeftHeld) {
                     sendButton(false);
                     directLeftHeld = false;
+                } else if (directPendingClick != null) {
+                    // Very fast tap that lifted before the defer window: fire
+                    // a synchronous click+release at the touch position so
+                    // the user still gets a click.
+                    final float x = ev.getX();
+                    final float y = ev.getY();
+                    cancelDirectPendingClick();
+                    sendAbsoluteMotionMapped(x, y);
+                    sendButton(true);
+                    sendButton(false);
                 }
                 return true;
             }
         }
         return true;
+    }
+
+    private void cancelDirectPendingClick() {
+        if (directPendingClick != null) {
+            removeCallbacks(directPendingClick);
+            directPendingClick = null;
+        }
     }
 
     private boolean onTrackpadEvent(MotionEvent ev) {
@@ -564,6 +604,10 @@ public class ClientGLSurface extends GLSurfaceView {
                 downX = lastX;
                 downY = lastY;
                 downTime = ev.getEventTime();
+                // Snapshot the cursor so we can roll it back if a second
+                // finger lands and turns this into a 2-finger scroll.
+                gestureStartCursorX = cursorX;
+                gestureStartCursorY = cursorY;
                 notifyCursor(true);
 
                 // Tap-tap-hold drag: if this DOWN follows a quick recent tap-up
@@ -589,6 +633,13 @@ public class ClientGLSurface extends GLSurfaceView {
                     sendButton(false);
                     tapTapHoldDragActive = false;
                 }
+                // Restore the cursor to where the gesture started so the brief
+                // one-finger drift before finger 2 landed doesn't leak through
+                // to the host as a small mouse move.
+                cursorX = gestureStartCursorX;
+                cursorY = gestureStartCursorY;
+                sendAbsoluteMotionMapped(cursorX, cursorY);
+                notifyCursor(true);
                 beginTwoFingerScroll(ev);
                 return true;
             }

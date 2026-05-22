@@ -196,7 +196,12 @@ public final class MouseButtonRow extends LinearLayout {
             final float[] lastY = { 0f };
             final float[] accumY = { 0f };
             final boolean[] hasScrolled = { false };
-            final float pxPerTick = dp(8);
+            // Match ClientGLSurface.SCROLL_PX_PER_TICK (raw px) so the
+            // user's Scroll Sensitivity slider produces the same scroll
+            // speed on the M button as it does on two-finger surface
+            // scrolls. Previously this was dp(8) which on a ~3x density
+            // device meant ~3x more finger travel per tick.
+            final float pxPerTick = 8f;
 
             btn.setOnTouchListener((v, ev) -> {
                 switch (ev.getActionMasked()) {
