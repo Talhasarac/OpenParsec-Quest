@@ -644,8 +644,14 @@ public class ClientGLSurface extends GLSurfaceView {
                 return true;
             }
             case MotionEvent.ACTION_MOVE: {
-                if (twoFingerScroll && pointers >= 2) {
-                    updateTwoFingerScroll(ev);
+                if (twoFingerScroll) {
+                    // Stays engaged for the entire gesture even after one
+                    // finger has lifted. Without this, the intermediate MOVE
+                    // event between ACTION_POINTER_UP and ACTION_UP would
+                    // compute dx = currentX - lastX where lastX was set at
+                    // ACTION_DOWN before any scroll happened — leaking the
+                    // full finger travel as a final cursor jump.
+                    if (pointers >= 2) updateTwoFingerScroll(ev);
                     return true;
                 }
                 float dx = ev.getX() - lastX;
@@ -669,8 +675,18 @@ public class ClientGLSurface extends GLSurfaceView {
                 }
                 return true;
             }
-            case MotionEvent.ACTION_POINTER_UP:
+            case MotionEvent.ACTION_POINTER_UP: {
+                // Sync lastX/Y to whichever finger remains so if scroll mode
+                // somehow ends mid-gesture, a subsequent MOVE doesn't fire a
+                // huge cursor jump from stale ACTION_DOWN coordinates.
+                int upIdx = ev.getActionIndex();
+                int remainingIdx = upIdx == 0 ? 1 : 0;
+                if (remainingIdx < ev.getPointerCount()) {
+                    lastX = ev.getX(remainingIdx);
+                    lastY = ev.getY(remainingIdx);
+                }
                 return true;
+            }
             case MotionEvent.ACTION_UP: {
                 if (twoFingerScroll) {
                     maybeFireTwoFingerTap(ev);
