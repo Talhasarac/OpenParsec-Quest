@@ -75,7 +75,10 @@ final class KeyMap {
         }
     }
 
-    /** Translate a typed character into a ParsecKeycode (returns 0 if unmappable). */
+    /** Translate a typed character into a ParsecKeycode (returns 0 if unmappable).
+     *  Shifted US-layout punctuation maps to the base key — {@link #needsShift}
+     *  reports true for the same chars so the activity-level send path wraps
+     *  the keypress in a shift hold automatically. */
     static int fromChar(char ch) {
         if (ch >= 'a' && ch <= 'z') return KEY_A + (ch - 'a');
         if (ch >= 'A' && ch <= 'Z') return KEY_A + (ch - 'A');
@@ -85,6 +88,7 @@ final class KeyMap {
             case ' ':  return KEY_SPACE;
             case '\n': return KEY_ENTER;
             case '\t': return KEY_TAB;
+            // Unshifted punctuation
             case '-':  return KEY_MINUS;
             case '=':  return KEY_EQUALS;
             case '[':  return KEY_LBRACKET;
@@ -96,6 +100,31 @@ final class KeyMap {
             case ',':  return KEY_COMMA;
             case '.':  return KEY_PERIOD;
             case '/':  return KEY_SLASH;
+            // Shifted punctuation — map to the same base key as the
+            // unshifted variant. needsShift() returns true for these so the
+            // sender wraps the press in a shift hold.
+            // Number-row shifted variants — KEY_1..KEY_9 are KEY_1 + (n-1)
+            case '!':  return KEY_1;
+            case '@':  return KEY_1 + 1;
+            case '#':  return KEY_1 + 2;
+            case '$':  return KEY_1 + 3;
+            case '%':  return KEY_1 + 4;
+            case '^':  return KEY_1 + 5;
+            case '&':  return KEY_1 + 6;
+            case '*':  return KEY_1 + 7;
+            case '(':  return KEY_1 + 8;
+            case ')':  return 39 /* KEY_0 */;
+            case '_':  return KEY_MINUS;
+            case '+':  return KEY_EQUALS;
+            case '{':  return KEY_LBRACKET;
+            case '}':  return KEY_RBRACKET;
+            case '|':  return KEY_BACKSLASH;
+            case ':':  return KEY_SEMICOLON;
+            case '"':  return KEY_APOSTROPHE;
+            case '~':  return KEY_BACKTICK;
+            case '<':  return KEY_COMMA;
+            case '>':  return KEY_PERIOD;
+            case '?':  return KEY_SLASH;
             default:   return 0;
         }
     }
