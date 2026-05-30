@@ -219,3 +219,22 @@ Java_parsec_bindings_Parsec_clientHasNetworkFailure(JNIEnv *env, jobject instanc
     if (rc != PARSEC_OK) return JNI_TRUE;
     return status.networkFailure ? JNI_TRUE : JNI_FALSE;
 }
+
+/** Returns a freeze-detection signal — the SDK's reported decode latency
+ *  (milliseconds, float) scaled to 1000ths and packed in a jlong alongside
+ *  the network latency. Bits 32-63 carry decodeLatency * 1000; bits 0-31
+ *  carry networkLatency * 1000. The activity-level watchdog samples this
+ *  every 5s; if neither value changes for 15s the client is considered
+ *  hung and reconnects, even when networkFailure has NOT tripped (which
+ *  happens when the transport is alive but no fresh frames decode). */
+JNIEXPORT jlong JNICALL
+Java_parsec_bindings_Parsec_clientGetFreezeSignal(JNIEnv *env, jobject instance)
+{
+    Parsec *parsec = getPointer(env, instance, "parsec");
+    if (!parsec) return 0;
+    ParsecClientStatus status = {0};
+    if (ParsecClientGetStatus(parsec, &status) != PARSEC_OK) return 0;
+    jlong dec = (jlong) (status.metrics.decodeLatency * 1000.0f);
+    jlong net = (jlong) (status.metrics.networkLatency * 1000.0f);
+    return (dec << 32) | (net & 0xFFFFFFFFL);
+}

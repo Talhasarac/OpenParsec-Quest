@@ -35,6 +35,10 @@ public class Parsec {
      *  side (no host frames, transport down). Used by the activity-level
      *  health watchdog to trigger an auto-reconnect. */
     public native boolean clientHasNetworkFailure();
+    /** Returns a packed snapshot of decode + network latency (both * 1000).
+     *  When neither value changes for 15s straight, the activity treats it
+     *  as a freeze and reconnects even though networkFailure is still false. */
+    public native long clientGetFreezeSignal();
 
     // ParsecGamepadButton
     public static final int GAMEPAD_BUTTON_A          = 0;

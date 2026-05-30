@@ -170,6 +170,14 @@ public class ParsecActivity extends Activity {
         parsec.setLogCallback();
         parsec.init();
         int e = parsec.clientConnect(sessionId, peerId);
+        // If the first attempt fails (very common when reconnecting to a host
+        // we just disconnected from — Parsec's relay holds the stale session
+        // warm on the host for ~1-2s), schedule up to 3 deferred retries with
+        // 1500ms spacing. Retries happen off the main thread to avoid ANR.
+        if (e != parsec.PARSEC_OK) {
+            scheduleConnectRetry(1);
+            return;
+        }
         if (e == parsec.PARSEC_OK) {
             statusView.setVisibility(View.GONE);
             surface = new ClientGLSurface(getApplicationContext());
@@ -470,10 +478,124 @@ public class ParsecActivity extends Activity {
         if (healthHandler == null) healthHandler = new android.os.Handler(getMainLooper());
         healthHandler.removeCallbacks(healthCheck);
         healthHandler.postDelayed(healthCheck, INITIAL_CHECK_DELAY_MS);
+        // Reset freeze-detection state on each (re)start so a clean session
+        // can't inherit a stale signal from before.
+        lastFreezeSignal = 0L;
+        freezeUnchangedSamples = 0;
+        healthHandler.removeCallbacks(freezeCheck);
+        healthHandler.postDelayed(freezeCheck, FREEZE_CHECK_INTERVAL_MS);
     }
 
     private void stopHealthWatchdog() {
-        if (healthHandler != null) healthHandler.removeCallbacks(healthCheck);
+        if (healthHandler != null) {
+            healthHandler.removeCallbacks(healthCheck);
+            healthHandler.removeCallbacks(freezeCheck);
+        }
+    }
+
+    /** Sidecar watchdog that fires every {@link #FREEZE_CHECK_INTERVAL_MS}
+     *  ms and looks at the SDK's reported decode + network latency. If
+     *  neither value changes for {@link #FREEZE_TICKS_TO_RECONNECT}
+     *  consecutive samples the client is treated as frozen and we force a
+     *  reconnect. Complements the existing networkFailure watchdog —
+     *  catches "transport is alive but no fresh frames" hangs that the
+     *  hard-failure flag doesn't trip on. */
+    private long lastFreezeSignal = 0L;
+    private int freezeUnchangedSamples = 0;
+    private static final long FREEZE_CHECK_INTERVAL_MS = 5000L;
+    private static final int FREEZE_TICKS_TO_RECONNECT = 3; // 3 × 5s = 15s
+    private final Runnable freezeCheck = this::tickFreezeCheck;
+
+    private void tickFreezeCheck() {
+        if (isFinishing() || isDestroyed()) return;
+        if (isReconnecting || parsec == null) {
+            scheduleNextFreezeCheck();
+            return;
+        }
+        long signal;
+        try { signal = parsec.clientGetFreezeSignal(); }
+        catch (Throwable t) { signal = 0L; }
+        if (signal != 0L && signal == lastFreezeSignal) {
+            freezeUnchangedSamples++;
+            if (freezeUnchangedSamples >= FREEZE_TICKS_TO_RECONNECT) {
+                Log.d("ParsecHealth", "freeze watchdog tripped — signal stuck at 0x"
+                        + Long.toHexString(signal) + " for "
+                        + (FREEZE_TICKS_TO_RECONNECT * FREEZE_CHECK_INTERVAL_MS / 1000) + "s");
+                freezeUnchangedSamples = 0;
+                reconnectSession();
+                return; // reconnectSession will reschedule
+            }
+        } else {
+            freezeUnchangedSamples = 0;
+            lastFreezeSignal = signal;
+        }
+        scheduleNextFreezeCheck();
+    }
+
+    private void scheduleNextFreezeCheck() {
+        if (healthHandler == null) return;
+        healthHandler.removeCallbacks(freezeCheck);
+        healthHandler.postDelayed(freezeCheck, FREEZE_CHECK_INTERVAL_MS);
+    }
+
+    /** Deferred connect retry — same Parsec instance, schedule another
+     *  clientConnect on a worker thread after a delay so a stale-session
+     *  linger on the host clears before we try again. {@code attempt} is
+     *  1-based for the retry (1 = first retry, 2 = second, etc.). */
+    private void scheduleConnectRetry(final int attempt) {
+        if (attempt > 3) {
+            statusView.setText("Connect failed after retries.");
+            Toast.makeText(this, "Couldn't reach host. Tap a host again to retry.",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        statusView.setText("Connecting… (retry " + attempt + ")");
+        new android.os.Handler(getMainLooper()).postDelayed(() -> {
+            if (isFinishing() || isDestroyed() || parsec == null) return;
+            new Thread(() -> {
+                final int rc = parsec.clientConnect(connSessionId, connPeerId);
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    if (rc == parsec.PARSEC_OK) {
+                        setupAfterConnect();
+                    } else {
+                        Log.d("ParsecConnect", "retry " + attempt
+                                + " rc=" + rc + " — scheduling next");
+                        scheduleConnectRetry(attempt + 1);
+                    }
+                });
+            }, "ParsecConnectRetry").start();
+        }, 1500L);
+    }
+
+    /** Builds the surface + overlays after a successful clientConnect.
+     *  Extracted so both the initial path in {@code onCreate} and the
+     *  deferred retry path can share it. */
+    private void setupAfterConnect() {
+        statusView.setVisibility(View.GONE);
+        surface = new ClientGLSurface(getApplicationContext());
+        surface.setParsec(parsec);
+        applySettingsToSurface();
+        surface.setTrackpadListener((x, y, visible) -> {
+            if (cursorView == null) return;
+            if (!visible) { cursorView.setVisibility(View.GONE); return; }
+            int size = cursorView.getWidth();
+            if (size == 0) size = cursorSizePx();
+            cursorView.setTranslationX(x - size / 2f);
+            cursorView.setTranslationY(y - size / 2f);
+            cursorView.setVisibility(View.VISIBLE);
+        });
+        root.addView(surface, 0, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        surface.renderInit();
+        buildMouseButtonRow();
+        buildKeyboardCapture();
+        buildKeyboardButton();
+        buildImeAccessoryBar();
+        if (STEALTH_GRID) {
+            root.post(() -> debugGrid = DebugGrid.installCornerAnchors(this, root));
+        }
+        startHealthWatchdog();
     }
 
     /** Tear down the current Parsec session and reconnect using the cached
