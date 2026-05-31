@@ -106,23 +106,27 @@ public final class SettingsPanel {
         // Graphics
         list.addView(catTitle(a, "Graphics"));
         LinearLayout graphics = catCard(a);
-        graphics.addView(rowPickerInt(a, "Default Resolution",
+        graphics.addView(rowPickerInt(a, "Host Resolution",
                 Settings.RESOLUTION_LABELS,
                 new int[]{0, 1, 2, 3, 4},
                 s.resolutionIndex(), s::resolutionIndex));
         addDivider(a, graphics);
-        graphics.addView(rowPicker(a, "Decoder",
-                new String[]{"H.264", "Prefer H.265"},
-                new String[]{Settings.DECODER_H264, Settings.DECODER_H265},
-                s.decoder(), s::decoder));
-        addDivider(a, graphics);
-        graphics.addView(rowPickerInt(a, "Frame Rate",
-                new String[]{"Auto (Device Max)", "120 FPS", "60 FPS", "30 FPS"},
+        graphics.addView(rowPickerInt(a, "Host Refresh Rate",
+                new String[]{"Auto", "120 Hz", "60 Hz", "30 Hz"},
                 new int[]{0, 120, 60, 30},
                 s.preferredFps(), s::preferredFps));
         addDivider(a, graphics);
-        graphics.addView(rowToggle(a, "Decoder Compatibility",
+        // Honest note: resolution/refresh only apply when you're the owner of
+        // the host PC connecting first (i.e. streaming your own machine).
+        graphics.addView(rowNote(a,
+                "Resolution & refresh only apply when streaming your own PC "
+                + "(you're the host owner). Ignored for shared/guest sessions."));
+        addDivider(a, graphics);
+        graphics.addView(rowToggle(a, "Force Software Decoder",
                 s.decoderCompatibility(), s::decoderCompatibility));
+        addDivider(a, graphics);
+        graphics.addView(rowToggle(a, "Show Performance Stats",
+                s.showStats(), s::showStats));
         list.addView(graphics);
 
         // Appearance
@@ -220,6 +224,18 @@ public final class SettingsPanel {
         lp.leftMargin = dp(a, 16);
         lp.rightMargin = dp(a, 16);
         parent.addView(v, lp);
+    }
+
+    /** A small explanatory caption row (no control), used for honest notes
+     *  like "this setting only applies when streaming your own PC". */
+    private static View rowNote(Context a, String text) {
+        TextView t = new TextView(a);
+        t.setText(text);
+        t.setTextColor(MaterialUi.color(a, com.google.android.material.R.attr.colorOnSurfaceVariant));
+        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        int p = dp(a, 14);
+        t.setPadding(p + dp(a, 2), dp(a, 6), p + dp(a, 2), dp(a, 10));
+        return t;
     }
 
     private static LinearLayout row(Context a, String label) {

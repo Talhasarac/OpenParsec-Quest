@@ -19,7 +19,14 @@ public class Parsec {
     public native void setLogCallback();
     public native void init();
     public native void destroy();
-    public native int clientConnect(String sessionID, String peerID);
+    /** Connect with explicit client config. decoderSoftware forces software
+     *  decode; resolutionX/Y + refreshRate request a host resolution (only
+     *  honored when this client is the owner's first connection — i.e. you're
+     *  streaming your own PC). Pass 0 for resolution/refresh to leave the host
+     *  untouched. */
+    public native int clientConnect(String sessionID, String peerID,
+                                    int decoderSoftware,
+                                    int resolutionX, int resolutionY, int refreshRate);
     public native void clientPollAudio();
     public native void clientDestroy();
     public native void clientSetDimensions(int x, int y);
@@ -39,6 +46,27 @@ public class Parsec {
      *  When neither value changes for 15s straight, the activity treats it
      *  as a freeze and reconnects even though networkFailure is still false. */
     public native long clientGetFreezeSignal();
+
+    // ---- Stats overlay metrics ----
+    public native float clientGetDecodeLatency();   // ms
+    public native float clientGetNetworkLatency();  // ms (round-trip)
+    public native float clientGetEncodeLatency();   // ms
+    public native boolean clientDecoderFellBack();  // true if SW-decode fallback occurred
+
+    // ---- Client event pump (call once per render frame) ----
+    /** Drain pending client events (cursor mode, rumble, host user-data). */
+    public native void clientPollEvents();
+    /** True when the host has requested relative (pointer-lock / FPS) mouse mode. */
+    public native boolean clientGetCursorRelative();
+    /** Packed (motorBig<<8 | motorSmall) if a new rumble is pending, else -1. */
+    public native int clientPollRumble();
+    /** Latest host user-data (clipboard) text, or null. Clears on read. */
+    public native String clientPollClipboard();
+    /** Send a user-defined message to the host (used for clipboard, id=1). */
+    public native int clientSendUserData(int id, String text);
+
+    /** User-data message id used for clipboard interop (best-effort). */
+    public static final int CLIPBOARD_MSG_ID = 1;
 
     // ParsecGamepadButton
     public static final int GAMEPAD_BUTTON_A          = 0;

@@ -374,8 +374,12 @@ public class ClientGLSurface extends GLSurfaceView {
                 synchronized (parsecLock) {
                     if (!parsecAlive || parsec == null) return;
                     parsec.clientPollAudio();
+                    // Drain client events (cursor mode, rumble, host clipboard)
+                    // once per frame; the UI-thread IO pump reads the results.
+                    parsec.clientPollEvents();
                     parsec.clientGLRenderFrame();
                 }
+                framesRendered++; // for the stats-overlay FPS estimate
             }
         });
         setRenderMode(RENDERMODE_CONTINUOUSLY);
@@ -436,16 +440,43 @@ public class ClientGLSurface extends GLSurfaceView {
             if (pinching || panning) return true;
         }
 
+        // Under host-requested pointer-lock, absolute positioning is
+        // meaningless — always route through the trackpad (delta) path.
+        if (relativeMouseMode) return onTrackpadEvent(ev);
         if (trackpadMode) return onTrackpadEvent(ev);
         return onDirectTouchEvent(ev);
     }
 
     private float panLastCx = 0f, panLastCy = 0f;
 
+    /** Send a relative (pointer-lock) motion delta to the host. */
+    private void sendRelativeMotion(float dx, float dy) {
+        int rx = Math.round(dx * sensitivity);
+        int ry = Math.round(dy * sensitivity);
+        if (rx == 0 && ry == 0) return;
+        synchronized (parsecLock) {
+            if (parsecAlive && parsec != null) parsec.clientSendMouseMotion(true, rx, ry);
+        }
+    }
+
     /** Last-seen mouse button bitmask (BUTTON_PRIMARY, BUTTON_SECONDARY, ...).
      *  We diff against the new state on each event so left→right transitions
      *  generate one release + one press, never a stuck button. */
     private int lastMouseButtons = 0;
+
+    /** Monotonic count of rendered frames; the stats overlay diffs this each
+     *  second to estimate FPS. */
+    private volatile long framesRendered = 0;
+    public long framesRenderedSnapshot() { return framesRendered; }
+
+    /** When true, the host has requested relative (pointer-lock / FPS) mouse
+     *  mode: touch + hardware-mouse movement is sent as signed deltas via
+     *  clientSendMouseMotion(true, dx, dy) instead of absolute coordinates,
+     *  and the local cursor is hidden (the host draws its own). Toggled by the
+     *  activity's IO pump from Parsec.clientGetCursorRelative(). */
+    private volatile boolean relativeMouseMode = false;
+    public void setRelativeMouseMode(boolean on) { this.relativeMouseMode = on; }
+    public boolean isRelativeMouseMode() { return relativeMouseMode; }
 
     @Override
     public boolean onGenericMotionEvent(MotionEvent ev) {
@@ -455,8 +486,16 @@ public class ClientGLSurface extends GLSurfaceView {
         if (action == MotionEvent.ACTION_HOVER_MOVE
                 || action == MotionEvent.ACTION_HOVER_ENTER
                 || action == MotionEvent.ACTION_HOVER_EXIT) {
-            // Hover with no buttons → absolute cursor motion.
-            sendAbsoluteMotionMapped(ev.getX(), ev.getY());
+            if (relativeMouseMode) {
+                // Pointer-lock: send the hardware mouse delta. RELATIVE-source
+                // devices report deltas in X/Y directly; absolute-source mice
+                // are diffed against the last position.
+                sendHardwareMouseRelative(ev);
+            } else {
+                sendAbsoluteMotionMapped(ev.getX(), ev.getY());
+                lastMouseRawX = ev.getX();
+                lastMouseRawY = ev.getY();
+            }
             return true;
         }
         if (action == MotionEvent.ACTION_SCROLL) {
@@ -474,11 +513,41 @@ public class ClientGLSurface extends GLSurfaceView {
         return super.onGenericMotionEvent(ev);
     }
 
+    private float lastMouseRawX = 0f, lastMouseRawY = 0f;
+
+    /** Emit a relative motion delta from a hardware-mouse event for pointer-lock. */
+    private void sendHardwareMouseRelative(MotionEvent ev) {
+        float dx, dy;
+        if ((ev.getSource() & InputDevice.SOURCE_MOUSE_RELATIVE)
+                == InputDevice.SOURCE_MOUSE_RELATIVE) {
+            // Relative-source device: X/Y already carry the delta.
+            dx = ev.getX();
+            dy = ev.getY();
+        } else {
+            dx = ev.getX() - lastMouseRawX;
+            dy = ev.getY() - lastMouseRawY;
+            lastMouseRawX = ev.getX();
+            lastMouseRawY = ev.getY();
+        }
+        int rx = Math.round(dx);
+        int ry = Math.round(dy);
+        if (rx == 0 && ry == 0) return;
+        synchronized (parsecLock) {
+            if (parsecAlive && parsec != null) parsec.clientSendMouseMotion(true, rx, ry);
+        }
+    }
+
     /** Handle a SOURCE_MOUSE touch event: position update + edge-triggered
      *  button press/release. */
     private boolean handleMouseTouchEvent(MotionEvent ev) {
-        // Position update — always (mouse moves while held = drag).
-        sendAbsoluteMotionMapped(ev.getX(), ev.getY());
+        // Position update — relative delta under pointer-lock, else absolute.
+        if (relativeMouseMode) {
+            sendHardwareMouseRelative(ev);
+        } else {
+            sendAbsoluteMotionMapped(ev.getX(), ev.getY());
+            lastMouseRawX = ev.getX();
+            lastMouseRawY = ev.getY();
+        }
 
         int now = ev.getButtonState();
         int changed = now ^ lastMouseButtons;
@@ -667,6 +736,9 @@ public class ClientGLSurface extends GLSurfaceView {
                         // Parsec wheel: positive y = scroll down (SDK header).
                         sendWheel(0, scaledTick(ticks));
                     }
+                } else if (relativeMouseMode) {
+                    // Pointer-lock: emit relative deltas, host owns the cursor.
+                    sendRelativeMotion(dx, dy);
                 } else {
                     cursorX = clamp(cursorX + dx * sensitivity, 0, surfaceWidth - 1);
                     cursorY = clamp(cursorY + dy * sensitivity, 0, surfaceHeight - 1);

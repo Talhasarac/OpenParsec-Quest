@@ -56,8 +56,40 @@ public final class Settings {
     public int preferredFps() { return sp.getInt("preferredFps", 60); }
     public void preferredFps(int v) { sp.edit().putInt("preferredFps", v).apply(); }
 
+    /** "Decoder Compatibility" = force software decoding (ParsecClientConfig.decoderSoftware).
+     *  For devices whose hardware MediaCodec path is flaky. */
     public boolean decoderCompatibility() { return sp.getBoolean("decoderCompat", false); }
     public void decoderCompatibility(boolean v) { sp.edit().putBoolean("decoderCompat", v).apply(); }
+
+    /** Show the in-session performance stats overlay (latency / FPS HUD). */
+    public boolean showStats() { return sp.getBoolean("showStats", false); }
+    public void showStats(boolean v) { sp.edit().putBoolean("showStats", v).apply(); }
+
+    // ---- ParsecClientConfig mapping helpers ----
+    // resolutionX/Y/refreshRate only bite when this client is the host owner's
+    // first connection (streaming your own PC); 0 leaves the host unchanged.
+
+    /** Requested host width, or 0 for "Match Client" (leave host unchanged). */
+    public int configResolutionX() {
+        int idx = resolutionIndex();
+        if (idx <= 0 || idx >= RESOLUTIONS_W.length) return 0;
+        return RESOLUTIONS_W[idx];
+    }
+
+    /** Requested host height, or 0 for "Match Client" (leave host unchanged). */
+    public int configResolutionY() {
+        int idx = resolutionIndex();
+        if (idx <= 0 || idx >= RESOLUTIONS_H.length) return 0;
+        return RESOLUTIONS_H[idx];
+    }
+
+    /** Requested host refresh rate (Hz), or 0 for "Auto" (leave host unchanged). */
+    public int configRefreshRate() {
+        int fps = preferredFps();
+        return fps <= 0 ? 0 : fps;
+    }
+
+    public int decoderSoftwareFlag() { return decoderCompatibility() ? 1 : 0; }
 
     public boolean noOverlay() { return sp.getBoolean("noOverlay", false); }
     public void noOverlay(boolean v) { sp.edit().putBoolean("noOverlay", v).apply(); }

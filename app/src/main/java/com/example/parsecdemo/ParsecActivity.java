@@ -87,6 +87,22 @@ public class ParsecActivity extends Activity {
     /** Stable id used for the on-screen pad's button/axis messages. */
     private static final int VIRTUAL_GAMEPAD_ID = 1;
 
+    // ----- IO pump: cursor-mode, rumble, clipboard, stats (100ms tick) -----
+    private android.os.Handler ioHandler;
+    private final Runnable ioPump = this::tickIoPump;
+    private static final long IO_PUMP_INTERVAL_MS = 100L;
+    private android.os.Vibrator vibrator;
+    private android.content.ClipboardManager clipboard;
+    /** Stats HUD (latency / FPS), shown when Settings → Show Performance Stats. */
+    private TextView statsView;
+    private long lastFrameSnapshot = 0L;
+    private long lastFpsSampleMs = 0L;
+    private int currentFps = 0;
+    private long ioTickCount = 0L;
+    /** Tracks the last relative-mode value pushed to the surface so we only
+     *  toggle the cursor view / mode on an actual change. */
+    private boolean lastRelativeMode = false;
+
     // ----- Auto-reconnect watchdog -----
     /** Looper handler that runs the health check on the main thread. */
     private android.os.Handler healthHandler;
@@ -144,6 +160,11 @@ public class ParsecActivity extends Activity {
         cursorView.setVisibility(View.GONE);
         root.addView(cursorView, cursorLp);
 
+        buildStatsView();
+
+        vibrator = (android.os.Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+        clipboard = (android.content.ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+
         setContentView(root);
         applyImmersive(); // re-apply now that root exists so insets are consumed
 
@@ -169,7 +190,7 @@ public class ParsecActivity extends Activity {
         parsec = new Parsec();
         parsec.setLogCallback();
         parsec.init();
-        int e = parsec.clientConnect(sessionId, peerId);
+        int e = connectWithConfig(parsec, sessionId, peerId);
         // If the first attempt fails (very common when reconnecting to a host
         // we just disconnected from — Parsec's relay holds the stale session
         // warm on the host for ~1-2s), schedule up to 3 deferred retries with
@@ -211,6 +232,7 @@ public class ParsecActivity extends Activity {
                 });
             }
             startHealthWatchdog();
+            startIoPump();
         } else {
             statusView.setText("clientConnect failed (code " + e + ")");
             Toast.makeText(this, "Connect failed: " + e, Toast.LENGTH_LONG).show();
@@ -247,6 +269,9 @@ public class ParsecActivity extends Activity {
                     surface.setZoomEnabled(!surface.isZoomEnabled());
                     rebuildSessionFab();
                 }));
+        // Push the phone's clipboard to the host (best-effort: depends on the
+        // host honoring the user-data clipboard id).
+        items.add(new SessionFab.Item("Paste to host", this::sendClipboardToHost));
         items.add(new SessionFab.Item("Reconnect", this::reconnectSession));
         items.add(new SessionFab.Item("Disconnect", true, this::finish));
 
@@ -493,6 +518,144 @@ public class ParsecActivity extends Activity {
         }
     }
 
+    // ===================== IO pump (cursor/rumble/clipboard/stats) =========
+
+    private void startIoPump() {
+        if (ioHandler == null) ioHandler = new android.os.Handler(getMainLooper());
+        ioHandler.removeCallbacks(ioPump);
+        ioTickCount = 0L;
+        lastFpsSampleMs = 0L;
+        syncStatsHud();
+        ioHandler.post(ioPump);
+    }
+
+    private void stopIoPump() {
+        if (ioHandler != null) ioHandler.removeCallbacks(ioPump);
+        // Drop relative mode so a paused/ended session doesn't leave the cursor hidden.
+        if (surface != null && lastRelativeMode) {
+            surface.setRelativeMouseMode(false);
+            lastRelativeMode = false;
+        }
+    }
+
+    /** Fires every 100ms while connected. Consumes the C-side event state the
+     *  GL render thread accumulates (cursor pointer-lock mode, rumble, host
+     *  clipboard) and refreshes the stats HUD. */
+    private void tickIoPump() {
+        if (isFinishing() || isDestroyed() || parsec == null) return;
+        ioTickCount++;
+
+        // --- Relative (pointer-lock) cursor mode ---
+        boolean rel;
+        try { rel = parsec.clientGetCursorRelative(); }
+        catch (Throwable t) { rel = false; }
+        if (rel != lastRelativeMode) {
+            lastRelativeMode = rel;
+            if (surface != null) surface.setRelativeMouseMode(rel);
+            // In pointer-lock the host draws its own cursor; hide ours.
+            if (rel && cursorView != null) cursorView.setVisibility(View.GONE);
+        }
+
+        // --- Controller rumble (host -> client) ---
+        try {
+            int r = parsec.clientPollRumble();
+            if (r >= 0) {
+                int big = (r >> 8) & 0xFF;
+                int small = r & 0xFF;
+                triggerRumble(big, small);
+            }
+        } catch (Throwable ignored) {}
+
+        // --- Host clipboard -> Android clipboard (experimental) ---
+        try {
+            String clip = parsec.clientPollClipboard();
+            if (clip != null && !clip.isEmpty() && clipboard != null) {
+                clipboard.setPrimaryClip(
+                        android.content.ClipData.newPlainText("Parsec", clip));
+            }
+        } catch (Throwable ignored) {}
+
+        // --- Stats HUD (refresh ~2x/sec) ---
+        if (statsView != null && statsView.getVisibility() == View.VISIBLE
+                && (ioTickCount % 5 == 0)) {
+            updateStatsHud();
+        }
+
+        if (ioHandler != null) ioHandler.postDelayed(ioPump, IO_PUMP_INTERVAL_MS);
+    }
+
+    /** Vibrate to mirror a gamepad rumble. Scales the larger of the two motor
+     *  values into a short device vibration. */
+    private void triggerRumble(int big, int small) {
+        if (vibrator == null || !vibrator.hasVibrator()) return;
+        int amp = Math.max(big, small);
+        if (amp <= 0) return;
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator.vibrate(android.os.VibrationEffect.createOneShot(
+                        60, Math.max(1, Math.min(255, amp))));
+            } else {
+                vibrator.vibrate(60);
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private void buildStatsView() {
+        statsView = new TextView(this);
+        statsView.setTextColor(0xFFB9F6CA);
+        statsView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        statsView.setTypeface(Typeface.MONOSPACE);
+        statsView.setBackgroundColor(0x99000000);
+        statsView.setPadding(dp(8), dp(4), dp(8), dp(4));
+        statsView.setVisibility(View.GONE);
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP | Gravity.START);
+        lp.topMargin = dp(8);
+        lp.leftMargin = dp(8);
+        root.addView(statsView, lp);
+    }
+
+    /** Show/hide the stats HUD per the current setting. Called on connect and
+     *  when the settings panel closes. */
+    private void syncStatsHud() {
+        if (statsView == null) return;
+        statsView.setVisibility(settings.showStats() ? View.VISIBLE : View.GONE);
+    }
+
+    private void updateStatsHud() {
+        if (parsec == null || statsView == null) return;
+        // FPS from the surface frame counter over the elapsed wall time.
+        long now = android.os.SystemClock.uptimeMillis();
+        if (surface != null) {
+            long frames = surface.framesRenderedSnapshot();
+            if (lastFpsSampleMs != 0) {
+                long dtMs = now - lastFpsSampleMs;
+                if (dtMs > 0) currentFps = (int) Math.round((frames - lastFrameSnapshot) * 1000.0 / dtMs);
+            }
+            lastFrameSnapshot = frames;
+            lastFpsSampleMs = now;
+        }
+        float dec, net, enc;
+        boolean fellBack;
+        try {
+            dec = parsec.clientGetDecodeLatency();
+            net = parsec.clientGetNetworkLatency();
+            enc = parsec.clientGetEncodeLatency();
+            fellBack = parsec.clientDecoderFellBack();
+        } catch (Throwable t) { return; }
+
+        StringBuilder sb = new StringBuilder();
+        sb.append(String.format(java.util.Locale.US,
+                "%d fps  ping %.0fms\ndec %.1fms  enc %.1fms", currentFps, net, dec, enc));
+        if (fellBack) sb.append("  [SW decode]");
+        // Inline warnings — colorize red when degraded.
+        boolean warn = net > 80f || dec > 30f || fellBack;
+        statsView.setTextColor(warn ? 0xFFFF8A80 : 0xFFB9F6CA);
+        if (net > 120f) sb.append("\n⚠ high latency");
+        statsView.setText(sb.toString());
+    }
+
     /** Sidecar watchdog that fires every {@link #FREEZE_CHECK_INTERVAL_MS}
      *  ms and looks at the SDK's reported decode + network latency. If
      *  neither value changes for {@link #FREEZE_TICKS_TO_RECONNECT}
@@ -553,7 +716,7 @@ public class ParsecActivity extends Activity {
         new android.os.Handler(getMainLooper()).postDelayed(() -> {
             if (isFinishing() || isDestroyed() || parsec == null) return;
             new Thread(() -> {
-                final int rc = parsec.clientConnect(connSessionId, connPeerId);
+                final int rc = connectWithConfig(parsec, connSessionId, connPeerId);
                 runOnUiThread(() -> {
                     if (isFinishing() || isDestroyed()) return;
                     if (rc == parsec.PARSEC_OK) {
@@ -596,6 +759,7 @@ public class ParsecActivity extends Activity {
             root.post(() -> debugGrid = DebugGrid.installCornerAnchors(this, root));
         }
         startHealthWatchdog();
+        startIoPump();
     }
 
     /** Tear down the current Parsec session and reconnect using the cached
@@ -631,7 +795,7 @@ public class ParsecActivity extends Activity {
             final Parsec p = new Parsec();
             p.setLogCallback();
             p.init();
-            final int rc = p.clientConnect(connSessionId, connPeerId);
+            final int rc = connectWithConfig(p, connSessionId, connPeerId);
             runOnUiThread(() -> {
                 isReconnecting = false;
                 if (rc != 0) {
@@ -679,6 +843,7 @@ public class ParsecActivity extends Activity {
                 if (w > 0 && h > 0) parsec.clientSetDimensions(w, h);
                 statusView.setVisibility(View.GONE);
                 scheduleNextHealthCheck();
+                startIoPump();
             });
         }, "ParsecReconnect").start();
     }
@@ -725,6 +890,29 @@ public class ParsecActivity extends Activity {
         // Forward physical gamepad stick / trigger axis updates.
         if (GamepadInputHandler.handleMotionEvent(parsec, ev)) return true;
         return super.dispatchGenericMotionEvent(ev);
+    }
+
+    /** Send the phone's current clipboard text to the host as Parsec user-data.
+     *  Best-effort: whether the host pastes it depends on the host honoring
+     *  the reserved clipboard message id. */
+    private void sendClipboardToHost() {
+        if (parsec == null || clipboard == null) return;
+        CharSequence text = null;
+        if (clipboard.hasPrimaryClip() && clipboard.getPrimaryClip() != null
+                && clipboard.getPrimaryClip().getItemCount() > 0) {
+            text = clipboard.getPrimaryClip().getItemAt(0)
+                    .coerceToText(this);
+        }
+        if (text == null || text.length() == 0) {
+            Toast.makeText(this, "Clipboard is empty.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        try {
+            parsec.clientSendUserData(Parsec.CLIPBOARD_MSG_ID, text.toString());
+            Toast.makeText(this, "Sent clipboard to host.", Toast.LENGTH_SHORT).show();
+        } catch (Throwable t) {
+            Toast.makeText(this, "Couldn't send clipboard.", Toast.LENGTH_SHORT).show();
+        }
     }
 
     /** Fire the Ctrl+Alt+Del chord as a single sequence. Note: by default
@@ -1022,6 +1210,17 @@ public class ParsecActivity extends Activity {
         setRequestedOrientation(orient);
     }
 
+    /** Single choke point for clientConnect so the user's Settings
+     *  (software-decode + requested host resolution/refresh) are applied
+     *  consistently on the initial connect, retries, and reconnects. */
+    private int connectWithConfig(Parsec p, String sessionId, String peerId) {
+        return p.clientConnect(sessionId, peerId,
+                settings.decoderSoftwareFlag(),
+                settings.configResolutionX(),
+                settings.configResolutionY(),
+                settings.configRefreshRate());
+    }
+
     private void applySettingsToSurface() {
         if (surface == null) return;
         surface.setTrackpadMode(settings.isTouchpadMode());
@@ -1056,6 +1255,7 @@ public class ParsecActivity extends Activity {
             root.removeView(settingsOverlay);
             settingsOverlay = null;
             applySettingsToSurface();
+            syncStatsHud(); // user may have toggled Show Performance Stats
         }
     }
 
@@ -1226,6 +1426,7 @@ public class ParsecActivity extends Activity {
         // Pause the watchdog while backgrounded; checking a dead session over
         // and over while the OS has the network paused is pointless.
         stopHealthWatchdog();
+        stopIoPump();
         super.onPause();
     }
 
@@ -1237,12 +1438,13 @@ public class ParsecActivity extends Activity {
         // Resume the watchdog. If we came back from background and the session
         // died, the first health tick (5s after resume) will catch it and
         // auto-reconnect within ~2 ticks.
-        if (parsec != null) startHealthWatchdog();
+        if (parsec != null) { startHealthWatchdog(); startIoPump(); }
     }
 
     @Override
     protected void onDestroy() {
         stopHealthWatchdog();
+        stopIoPump();
         if (surface != null) surface.shutdown();
         if (parsec != null) {
             parsec.clientDestroy();
