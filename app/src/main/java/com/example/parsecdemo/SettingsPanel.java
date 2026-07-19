@@ -155,6 +155,16 @@ public final class SettingsPanel {
         misc.addView(rowToggle(a, "Hide Status Bar", s.hideStatusBar(), s::hideStatusBar));
         addDivider(a, misc);
         misc.addView(rowToggle(a, "Show Keyboard Button", s.showKeyboardButton(), s::showKeyboardButton));
+        if (s.isQuestDevice()) {
+            addDivider(a, misc);
+            misc.addView(rowToggle(a, "Quest Controller Shortcuts",
+                    s.questControllerShortcuts(), s::questControllerShortcuts));
+            addDivider(a, misc);
+            misc.addView(rowNote(a,
+                    "When Horizon exposes Touch buttons: A = Alt+Tab, "
+                    + "X = Copy, Y = Paste, hold B = Ctrl+Alt+Delete. "
+                    + "A paired gamepad is not remapped."));
+        }
         list.addView(misc);
 
         // About — version + manual update check

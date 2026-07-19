@@ -15,6 +15,9 @@ The upstream Android APK may already run on a Quest when sideloaded.
 - configures the app as a resizable landscape 2D panel
 - defaults to direct pointer input and 1080p/60 on Quest hardware
 - displays basic Quest controller guidance
+- adds session-menu actions for Alt+Tab, Ctrl+C, Ctrl+V, and Ctrl+Alt+Delete
+- maps recognized Touch buttons to A = Alt+Tab, X = Copy, Y = Paste, and
+  hold B = Ctrl+Alt+Delete
 - disables updates to the differently packaged upstream phone build
 - includes small CMake, native audio-struct, and Android resource fixes needed
   by this build
@@ -38,7 +41,8 @@ an immersive VR environment.
 
 Point at the panel and pull the controller trigger to click. A paired
 Bluetooth keyboard, mouse, or gamepad is recommended for full desktop or game
-input.
+input. Touch-button shortcuts depend on Horizon exposing the controllers as
+Android input devices; the in-session menu remains available when it does not.
 
 ## Build from source
 

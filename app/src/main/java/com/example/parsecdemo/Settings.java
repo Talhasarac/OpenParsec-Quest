@@ -107,6 +107,16 @@ public final class Settings {
     public boolean showKeyboardButton() { return sp.getBoolean("showKeyboardButton", true); }
     public void showKeyboardButton(boolean v) { sp.edit().putBoolean("showKeyboardButton", v).apply(); }
 
+    /** Map Quest Touch face buttons to desktop shortcuts when Horizon exposes
+     *  those controllers as Android input devices. Defaults on only for Quest. */
+    public boolean questControllerShortcuts() {
+        return sp.getBoolean("questControllerShortcuts", quest);
+    }
+    public void questControllerShortcuts(boolean v) {
+        sp.edit().putBoolean("questControllerShortcuts", v).apply();
+    }
+    public boolean isQuestDevice() { return quest; }
+
     /** Orientation policy.
      *  - "auto"      : follow device sensor (RustDesk default — both work)
      *  - "landscape" : force sensorLandscape

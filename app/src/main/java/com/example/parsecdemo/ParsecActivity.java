@@ -65,6 +65,17 @@ public class ParsecActivity extends Activity {
     private int heldButtonCount = 0; // tracks how many virtual buttons are pressed
     private FrameLayout settingsOverlay;
     private Settings settings;
+    private final android.os.Handler questShortcutHandler =
+            new android.os.Handler(android.os.Looper.getMainLooper());
+    private boolean questCadHoldPending = false;
+    private static final long QUEST_CAD_HOLD_MS = 900L;
+    private final Runnable questCadHoldAction = () -> {
+        if (!questCadHoldPending) return;
+        questCadHoldPending = false;
+        if (settings == null || !settings.questControllerShortcuts()) return;
+        sendCtrlAltDel();
+        Toast.makeText(this, "Sent Ctrl+Alt+Delete", Toast.LENGTH_SHORT).show();
+    };
     /** When the IME pushes a user-positioned mouse row out of the way, we
      *  stash the original Y here and restore it when the IME closes. Null
      *  while the user-positioned row is in its normal place. */
@@ -253,7 +264,11 @@ public class ParsecActivity extends Activity {
                     updateMouseButtonRow();
                     rebuildSessionFab();
                 }));
-        // Ctrl+Alt+Del — buried in the menu so it isn't fired by accident
+        items.add(new SessionFab.Item("Alt+Tab", this::sendAltTab));
+        items.add(new SessionFab.Item("Copy (Ctrl+C)", this::sendCopyShortcut));
+        items.add(new SessionFab.Item("Paste (Ctrl+V)", this::sendPasteShortcut));
+        // Ctrl+Alt+Del stays in the menu as a reliable fallback even when
+        // Horizon exposes Touch controllers only as pointing devices.
         items.add(new SessionFab.Item("Ctrl+Alt+Del", this::sendCtrlAltDel));
         items.add(new SessionFab.Item(
                 virtualGamepad != null ? "Hide gamepad" : "Show gamepad",
@@ -880,6 +895,7 @@ public class ParsecActivity extends Activity {
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        if (handleQuestControllerShortcut(event)) return true;
         // Forward physical gamepad button presses straight to Parsec.
         if (GamepadInputHandler.handleKeyEvent(parsec, event)) return true;
         return super.dispatchKeyEvent(event);
@@ -915,16 +931,105 @@ public class ParsecActivity extends Activity {
         }
     }
 
+    /**
+     * Handle Touch face buttons only when the input device identifies itself
+     * as an Oculus/Meta Touch controller. A paired conventional gamepad is
+     * deliberately left on the normal gamepad-forwarding path.
+     */
+    private boolean handleQuestControllerShortcut(KeyEvent event) {
+        if (settings == null || !settings.questControllerShortcuts()
+                || !QuestPlatform.isTouchController(event.getDevice())) {
+            return false;
+        }
+
+        int keyCode = event.getKeyCode();
+        boolean isCadButton = keyCode == KeyEvent.KEYCODE_BUTTON_B
+                || keyCode == KeyEvent.KEYCODE_BACK;
+        if (isCadButton) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                questCadHoldPending = true;
+                questShortcutHandler.removeCallbacks(questCadHoldAction);
+                questShortcutHandler.postDelayed(questCadHoldAction, QUEST_CAD_HOLD_MS);
+            } else if (event.getAction() == KeyEvent.ACTION_UP) {
+                cancelQuestCadHold();
+            }
+            return true;
+        }
+
+        Runnable action;
+        String label;
+        switch (keyCode) {
+            case KeyEvent.KEYCODE_BUTTON_A:
+                action = this::sendAltTab;
+                label = "Alt+Tab";
+                break;
+            case KeyEvent.KEYCODE_BUTTON_X:
+                action = this::sendCopyShortcut;
+                label = "Copy";
+                break;
+            case KeyEvent.KEYCODE_BUTTON_Y:
+                action = this::sendPasteShortcut;
+                label = "Paste";
+                break;
+            default:
+                return false;
+        }
+
+        if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+            action.run();
+            Toast.makeText(this, label, Toast.LENGTH_SHORT).show();
+        }
+        // Consume both DOWN and UP so the same Touch press is not also
+        // forwarded as a host gamepad button.
+        return event.getAction() == KeyEvent.ACTION_DOWN
+                || event.getAction() == KeyEvent.ACTION_UP;
+    }
+
+    private void cancelQuestCadHold() {
+        questCadHoldPending = false;
+        questShortcutHandler.removeCallbacks(questCadHoldAction);
+    }
+
+    private void sendAltTab() {
+        sendChord(PK_LALT, KeyMap.KEY_TAB);
+    }
+
+    private void sendCopyShortcut() {
+        sendChord(PK_LCTRL, KeyMap.KEY_C);
+    }
+
+    private void sendPasteShortcut() {
+        sendChord(PK_LCTRL, KeyMap.KEY_V);
+    }
+
     /** Fire the Ctrl+Alt+Del chord as a single sequence. Note: by default
      *  Windows blocks software-injected SAS; to make this work the host needs
      *  {@code host_ctrl_alt_del=1} in its Parsec config. */
     private void sendCtrlAltDel() {
-        sendKey(PK_LCTRL, true);
-        sendKey(PK_LALT,  true);
-        sendKey(KeyMap.KEY_DELETE, true);
-        sendKey(KeyMap.KEY_DELETE, false);
-        sendKey(PK_LALT,  false);
-        sendKey(PK_LCTRL, false);
+        sendChord(PK_LCTRL, PK_LALT, KeyMap.KEY_DELETE);
+    }
+
+    /**
+     * Press every key in order and always release all of them in reverse.
+     * Releasing in a finally block protects the host from a stuck Ctrl/Alt if
+     * JNI throws, the connection drops, or a shortcut is interrupted midway.
+     */
+    private void sendChord(int... parsecKeys) {
+        if (parsec == null || parsecKeys == null || parsecKeys.length == 0) return;
+        try {
+            for (int key : parsecKeys) sendKey(key, true);
+        } catch (Throwable t) {
+            Log.w("ParsecKey", "Shortcut send failed", t);
+        } finally {
+            for (int i = parsecKeys.length - 1; i >= 0; i--) {
+                try {
+                    sendKey(parsecKeys[i], false);
+                } catch (Throwable t) {
+                    Log.w("ParsecKey", "Failed to release shortcut key "
+                            + parsecKeys[i], t);
+                }
+            }
+        }
     }
 
     private void sendKey(int parsecKey, boolean pressed) {
@@ -1419,6 +1524,7 @@ public class ParsecActivity extends Activity {
 
     @Override
     protected void onPause() {
+        cancelQuestCadHold();
         if (surface != null) surface.onPause();
         // Release any held physical-gamepad inputs so the host doesn't see a
         // stuck button while we're backgrounded.
@@ -1443,6 +1549,7 @@ public class ParsecActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        cancelQuestCadHold();
         stopHealthWatchdog();
         stopIoPump();
         if (surface != null) surface.shutdown();
