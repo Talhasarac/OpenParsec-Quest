@@ -1345,8 +1345,8 @@ public class ParsecActivity extends Activity {
         return p.clientConnect(sessionId, peerId,
                 settings.decoderSoftwareFlag(),
                 settings.decoderH265Flag(),
-                settings.configResolutionX(),
-                settings.configResolutionY());
+                requestedHostWidth(),
+                requestedHostHeight());
     }
 
     /**
@@ -1369,8 +1369,8 @@ public class ParsecActivity extends Activity {
         try {
             JSONArray video = new JSONArray();
             video.put(hostVideoEntry(
-                    settings.configResolutionX(),
-                    settings.configResolutionY(),
+                    requestedHostWidth(),
+                    requestedHostHeight(),
                     bandwidth,
                     settings.constantFps(),
                     settings.configFrameRate()));
@@ -1406,6 +1406,8 @@ public class ParsecActivity extends Activity {
         if (parsec == null || settings == null) return;
         int bandwidth = settings.bandwidthMbps();
         int frameRate = settings.configFrameRate();
+        int width = requestedHostWidth();
+        int height = requestedHostHeight();
 
         try {
             JSONObject config = new JSONObject(rawConfig);
@@ -1415,6 +1417,10 @@ public class ParsecActivity extends Activity {
             if (active == null) {
                 sendFallbackHostVideoConfig();
                 return;
+            }
+            if (width > 0 && height > 0) {
+                active.put("resolutionX", width);
+                active.put("resolutionY", height);
             }
             if (bandwidth > 0)
                 active.put("encoderMaxBitrate", bandwidth);
@@ -1427,6 +1433,8 @@ public class ParsecActivity extends Activity {
                 Log.w("ParsecVideoConfig", "Merged video config failed: " + status);
             } else {
                 Log.i("ParsecVideoConfig", "Applied owner video settings: "
+                        + (width > 0 && height > 0
+                                ? width + "x" + height + "; " : "host resolution; ")
                         + (bandwidth > 0 ? bandwidth + " Mbps; " : "host bitrate; ")
                         + "constant FPS " + settings.constantFps());
             }
@@ -1434,6 +1442,26 @@ public class ParsecActivity extends Activity {
             Log.w("ParsecVideoConfig", "Invalid host video config; using fallback", t);
             sendFallbackHostVideoConfig();
         }
+    }
+
+    /**
+     * Resolve "Match Client" to the current Quest panel dimensions. Fixed
+     * resolution choices come directly from Settings. Returning zero only
+     * happens before Android has measured the panel, in which case the host
+     * keeps its current resolution until the delayed config request.
+     */
+    private int requestedHostWidth() {
+        int configured = settings != null ? settings.configResolutionX() : 0;
+        if (configured > 0) return configured;
+        if (surface != null && surface.getWidth() > 0) return surface.getWidth();
+        return root != null ? Math.max(0, root.getWidth()) : 0;
+    }
+
+    private int requestedHostHeight() {
+        int configured = settings != null ? settings.configResolutionY() : 0;
+        if (configured > 0) return configured;
+        if (surface != null && surface.getHeight() > 0) return surface.getHeight();
+        return root != null ? Math.max(0, root.getHeight()) : 0;
     }
 
     /** Ask for the current config before applying owner video settings. */

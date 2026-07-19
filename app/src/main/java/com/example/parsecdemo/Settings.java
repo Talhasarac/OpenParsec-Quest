@@ -113,17 +113,17 @@ public final class Settings {
     public void showStats(boolean v) { sp.edit().putBoolean("showStats", v).apply(); }
 
     // ---- ParsecClientConfig mapping helpers ----
-    // resolutionX/Y/refreshRate only bite when this client is the host owner's
-    // first connection (streaming your own PC); 0 leaves the host unchanged.
+    // A zero resolution selects the measured client panel size. ParsecActivity
+    // resolves it immediately before sending the owner video configuration.
 
-    /** Requested host width, or 0 for "Match Client" (leave host unchanged). */
+    /** Requested fixed host width, or 0 for "Match Client". */
     public int configResolutionX() {
         int idx = resolutionIndex();
         if (idx <= 0 || idx >= RESOLUTIONS_W.length) return 0;
         return RESOLUTIONS_W[idx];
     }
 
-    /** Requested host height, or 0 for "Match Client" (leave host unchanged). */
+    /** Requested fixed host height, or 0 for "Match Client". */
     public int configResolutionY() {
         int idx = resolutionIndex();
         if (idx <= 0 || idx >= RESOLUTIONS_H.length) return 0;

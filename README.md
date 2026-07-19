@@ -65,13 +65,13 @@ Requirements:
 The APK is written to:
 
 ```text
-app/build/outputs/apk/release/openparsec-quest2-0.4.1-quest-release.apk
+app/build/outputs/apk/release/openparsec-quest2-0.4.2-quest-release.apk
 ```
 
 With developer mode and ADB available, install it using:
 
 ```bash
-adb install -r app/build/outputs/apk/release/openparsec-quest2-0.4.1-quest-release.apk
+adb install -r app/build/outputs/apk/release/openparsec-quest2-0.4.2-quest-release.apk
 ```
 
 ## Credits
