@@ -120,6 +120,14 @@ public final class Settings {
         sp.edit().putBoolean("showPerformanceWarnings", v).apply();
     }
 
+    /** Decode and play host audio. Video remains active when this is off. */
+    public boolean soundEnabled() {
+        return sp.getBoolean("soundEnabled", true);
+    }
+    public void soundEnabled(boolean v) {
+        sp.edit().putBoolean("soundEnabled", v).apply();
+    }
+
     // ---- ParsecClientConfig mapping helpers ----
     // A zero resolution selects the measured client panel size. ParsecActivity
     // resolves it immediately before sending the owner video configuration.

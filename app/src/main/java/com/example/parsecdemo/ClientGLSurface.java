@@ -2,6 +2,8 @@ package com.example.parsecdemo;
 
 import android.content.Context;
 import android.opengl.GLSurfaceView;
+import android.os.Process;
+import android.util.Log;
 import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
@@ -28,6 +30,23 @@ public class ClientGLSurface extends GLSurfaceView {
     private Parsec parsec;
     private final Object parsecLock = new Object();
     private volatile boolean parsecAlive = false;
+
+    // Audio has its own lower-priority worker. It deliberately never takes
+    // parsecLock while polling, so app-side audio work cannot make the GL
+    // thread wait before rendering a frame. Worker shutdown is joined before
+    // a Parsec instance can be detached or destroyed.
+    private final Object audioWorkerLock = new Object();
+    private volatile boolean audioWorkerRunning = false;
+    private Thread audioWorker;
+    /** Persisted user preference, applied by ParsecActivity after attach. */
+    private boolean audioEnabled = true;
+    /** Lifecycle pause is separate so sleep never overwrites the preference. */
+    private boolean audioLifecyclePaused = false;
+    /** Whether the current Parsec instance has received an audio policy. */
+    private boolean audioPolicyApplied = false;
+    private boolean audioOutputActive = false;
+    private static final int AUDIO_POLL_TIMEOUT_MS = 20;
+    private static final int AUDIO_EMPTY_BACKOFF_MS = 4;
 
     private volatile int surfaceWidth = 0;
     private volatile int surfaceHeight = 0;
@@ -226,37 +245,182 @@ public class ClientGLSurface extends GLSurfaceView {
     }
     public boolean isZoomEnabled() { return zoomEnabled; }
 
-    public void setParsec(Parsec parsec) {
+    public void setParsec(Parsec nextParsec) {
+        // A worker holds a captured reference to the old Java/SDK instance.
+        // Join it before detaching so reconnect/destroy cannot free that
+        // instance beneath a late audio callback.
+        stopAudioWorker();
+
+        Parsec previous;
         synchronized (parsecLock) {
-            this.parsec = parsec;
-            this.parsecAlive = parsec != null;
+            previous = this.parsec;
+            this.parsec = nextParsec;
+            this.parsecAlive = nextParsec != null;
+            audioPolicyApplied = false;
+            audioOutputActive = false;
             if (parsecAlive && surfaceWidth > 0 && surfaceHeight > 0) {
                 // A preserved EGL surface does not receive onSurfaceChanged
                 // again after reconnect. Re-attach the new SDK instance to
                 // the actual GL viewport immediately.
-                parsec.clientSetDimensions(surfaceWidth, surfaceHeight);
+                nextParsec.clientSetDimensions(surfaceWidth, surfaceHeight);
             }
         }
-        if (parsec == null) {
+        if (previous != null && previous != nextParsec) {
+            // Flush the old device stream. The SDK call pauses audio only;
+            // the old video instance has already been detached from GL.
+            try {
+                previous.clientPauseAudio();
+            } catch (Throwable t) {
+                Log.w("ParsecAudio", "Could not pause detached audio", t);
+            }
+        }
+        if (nextParsec == null) {
             streamWidth = 0;
             streamHeight = 0;
             hardwareMousePositionValid = false;
         }
     }
 
-    /** Stop and flush device audio after the GL render thread has paused. */
+    /**
+     * Enable/disable host sound without changing video state. Disabling stops
+     * the worker first, then asks the SDK to pause audio-only processing.
+     */
+    public void setAudioEnabled(boolean enabled) {
+        audioEnabled = enabled;
+        applyAudioPolicy();
+    }
+
+    /** Stop and flush audio after the GL render thread has paused. */
     public void pauseAudioForLifecycle() {
+        audioLifecyclePaused = true;
+        applyAudioPolicy();
+    }
+
+    /** Resume only when the user preference is still enabled. */
+    public int resumeAudioForLifecycle() {
+        audioLifecyclePaused = false;
+        return applyAudioPolicy();
+    }
+
+    /**
+     * Apply the desired audio state to the current SDK instance.
+     *
+     * <p>All callers are main-thread lifecycle/settings transitions. The
+     * audio worker is fully stopped before a pause, while the SDK's documented
+     * audio-only pause flag leaves video live.</p>
+     */
+    private int applyAudioPolicy() {
+        boolean shouldPlay = audioEnabled && !audioLifecyclePaused;
+        Parsec current;
         synchronized (parsecLock) {
-            if (parsecAlive && parsec != null) parsec.clientPauseAudio();
+            current = parsecAlive ? parsec : null;
+        }
+        if (current == null) {
+            stopAudioWorker();
+            audioPolicyApplied = false;
+            audioOutputActive = false;
+            return 0;
+        }
+        if (audioPolicyApplied && audioOutputActive == shouldPlay) {
+            if (shouldPlay) startAudioWorker(current);
+            else stopAudioWorker();
+            return 0;
+        }
+
+        stopAudioWorker();
+        int drained = 0;
+        try {
+            if (shouldPlay) {
+                drained = current.clientResumeAudio();
+                audioOutputActive = true;
+                startAudioWorker(current);
+            } else {
+                current.clientPauseAudio();
+                audioOutputActive = false;
+            }
+            audioPolicyApplied = true;
+        } catch (Throwable t) {
+            audioPolicyApplied = true;
+            audioOutputActive = false;
+            Log.w("ParsecAudio", "Could not apply audio policy", t);
+        }
+        return drained;
+    }
+
+    private void startAudioWorker(Parsec workerParsec) {
+        synchronized (audioWorkerLock) {
+            if (audioWorkerRunning || audioWorker != null) return;
+            audioWorkerRunning = true;
+            audioWorker = new Thread(
+                    () -> runAudioWorker(workerParsec), "ParsecAudio");
+            audioWorker.start();
         }
     }
 
-    /** Drop SDK audio queued during headset sleep before rendering resumes. */
-    public int resumeAudioForLifecycle() {
-        synchronized (parsecLock) {
-            if (parsecAlive && parsec != null) return parsec.clientResumeAudio();
-            return 0;
+    private void runAudioWorker(Parsec workerParsec) {
+        try {
+            // Rendering/input stay at their normal priorities. Audio is
+            // explicitly background work and yields whenever no packet is
+            // ready, so it cannot monopolize Quest CPU time.
+            Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND);
+        } catch (Throwable ignored) {}
+
+        try {
+            while (audioWorkerRunning
+                    && !Thread.currentThread().isInterrupted()) {
+                boolean received;
+                try {
+                    received = workerParsec.clientPollAudio(
+                            AUDIO_POLL_TIMEOUT_MS);
+                } catch (Throwable t) {
+                    Log.w("ParsecAudio", "Audio worker stopped after poll failure", t);
+                    break;
+                }
+                if (!received) {
+                    try {
+                        Thread.sleep(AUDIO_EMPTY_BACKOFF_MS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }
+        } finally {
+            synchronized (audioWorkerLock) {
+                if (audioWorker == Thread.currentThread()) {
+                    audioWorker = null;
+                    audioWorkerRunning = false;
+                }
+            }
         }
+    }
+
+    /**
+     * Stop and join the captured-instance worker. PollAudio has a bounded
+     * timeout and AAudio writes are non-blocking, so this normally completes
+     * within one short audio poll.
+     */
+    private void stopAudioWorker() {
+        Thread worker;
+        synchronized (audioWorkerLock) {
+            audioWorkerRunning = false;
+            worker = audioWorker;
+            if (worker != null) worker.interrupt();
+        }
+        if (worker == null || worker == Thread.currentThread()) return;
+
+        boolean interrupted = false;
+        while (worker.isAlive()) {
+            try {
+                worker.join();
+            } catch (InterruptedException e) {
+                interrupted = true;
+            }
+        }
+        synchronized (audioWorkerLock) {
+            if (audioWorker == worker) audioWorker = null;
+        }
+        if (interrupted) Thread.currentThread().interrupt();
     }
 
     public void setTrackpadListener(TrackpadListener l) {
@@ -436,7 +600,6 @@ public class ClientGLSurface extends GLSurfaceView {
             @Override public void onDrawFrame(GL10 gl10) {
                 synchronized (parsecLock) {
                     if (!parsecAlive || parsec == null) return;
-                    parsec.clientPollAudio();
                     // Drain client events (cursor mode, rumble, host clipboard)
                     // once per frame; the UI-thread IO pump reads the results.
                     parsec.clientPollEvents();
@@ -450,9 +613,14 @@ public class ClientGLSurface extends GLSurfaceView {
     }
 
     public void shutdown() {
+        audioLifecyclePaused = true;
+        applyAudioPolicy();
+        stopAudioWorker();
         synchronized (parsecLock) {
             parsecAlive = false;
             parsec = null;
+            audioPolicyApplied = false;
+            audioOutputActive = false;
         }
     }
 

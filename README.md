@@ -36,6 +36,9 @@ The upstream Android APK may already run on a Quest when sideloaded.
   client configuration API, with automatic H.264 fallback
 - adds default-on network and device performance warning icons, with
   hysteresis to avoid flashing and an Overlay Warnings setting to hide them
+- moves audio polling off the GL thread onto a lower-priority worker so video
+  never waits for app-side audio work, and adds a Play Sound setting that
+  pauses audio decoding/output without pausing video
 - disables updates to the differently packaged upstream phone build
 - includes small CMake, native audio-struct, and Android resource fixes needed
   by this build
@@ -78,13 +81,13 @@ Requirements:
 The APK is written to:
 
 ```text
-app/build/outputs/apk/release/openparsec-quest2-0.4.8-quest-release.apk
+app/build/outputs/apk/release/openparsec-quest2-0.4.9-quest-release.apk
 ```
 
 With developer mode and ADB available, install it using:
 
 ```bash
-adb install -r app/build/outputs/apk/release/openparsec-quest2-0.4.8-quest-release.apk
+adb install -r app/build/outputs/apk/release/openparsec-quest2-0.4.9-quest-release.apk
 ```
 
 ## Credits

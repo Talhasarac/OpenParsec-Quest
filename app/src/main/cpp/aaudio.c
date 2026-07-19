@@ -201,9 +201,10 @@ void aaudio_play(const int16_t *pcm, uint32_t frames, void *opaque)
         AAudioStream_requestStart(ctx->stream);
     }
 
-    // Never block the GL/render thread waiting for audio space. The caller
-    // drains all pending SDK packets, so a full device buffer means this
-    // packet is already too old and should be dropped to preserve low latency.
+    // Never block the low-priority audio worker waiting for device space.
+    // A full buffer means this packet is already too old, so dropping it is
+    // preferable to building stable delay. The GL/render thread never enters
+    // this audio path.
     aaudio_result_t written = AAudioStream_write(ctx->stream, pcm, frames, 0);
     if (written < 0) {
         __android_log_print(ANDROID_LOG_WARN, "PARSEC",

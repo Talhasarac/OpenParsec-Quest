@@ -152,6 +152,17 @@ public final class SettingsPanel {
                 s.showStats(), s::showStats));
         list.addView(graphics);
 
+        // Audio
+        list.addView(catTitle(a, "Audio"));
+        LinearLayout audio = catCard(a);
+        audio.addView(rowToggle(a, "Play Sound",
+                s.soundEnabled(), s::soundEnabled));
+        addDivider(a, audio);
+        audio.addView(rowNote(a,
+                "Turn sound off to pause host-audio decoding and output. "
+                + "Video and input continue normally with sound disabled."));
+        list.addView(audio);
+
         // Appearance
         list.addView(catTitle(a, "Appearance"));
         LinearLayout appearance = catCard(a);

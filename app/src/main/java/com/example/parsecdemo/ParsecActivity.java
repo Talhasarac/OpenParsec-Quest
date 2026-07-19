@@ -1945,6 +1945,7 @@ public class ParsecActivity extends Activity {
         surface.setTrackpadMode(settings.isTouchpadMode());
         surface.setSensitivity(settings.mouseSensitivity());
         surface.setScrollSensitivity(settings.scrollSensitivity());
+        surface.setAudioEnabled(settings.soundEnabled());
         if (cursorView != null) {
             int sz = cursorSizePx();
             ViewGroup.LayoutParams lp = cursorView.getLayoutParams();
@@ -2207,8 +2208,8 @@ public class ParsecActivity extends Activity {
             // Release cached/synthetic mouse state before Horizon can drop the
             // matching UP event while the panel is backgrounded.
             surface.resetTouchState();
-            // Stop the GL/audio polling thread first, then flush device audio.
-            // This ordering prevents a final poll from refilling the stream.
+            // Stop GL first, then join the separate audio worker and flush it.
+            // Neither transition asks the SDK to pause video.
             surface.onPause();
             surface.pauseAudioForLifecycle();
         }
@@ -2226,8 +2227,8 @@ public class ParsecActivity extends Activity {
     protected void onResume() {
         super.onResume();
         if (surface != null) {
-            // Catch the SDK up to live audio before the render thread begins
-            // polling again; otherwise the buffered sleep audio plays late.
+            // Catch the audio worker up to the live edge before video
+            // rendering resumes; otherwise buffered sleep audio plays late.
             int staleAudioPackets = surface.resumeAudioForLifecycle();
             if (staleAudioPackets > 0) {
                 Log.i("ParsecActivity", "Discarded " + staleAudioPackets

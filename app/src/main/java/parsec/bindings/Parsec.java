@@ -30,10 +30,13 @@ public class Parsec {
     /** Apply decoder, codec, and owner host-resolution preferences live. */
     public native int clientSetConfig(int decoderSoftware, int decoderH265,
                                       int resolutionX, int resolutionY);
-    public native void clientPollAudio();
+    /** Poll at most one audio packet. Intended for the low-priority audio
+     *  worker, never the GL render thread. */
+    public native boolean clientPollAudio(int timeoutMs);
+    /** Pause SDK audio processing and flush device output; video is untouched. */
     public native void clientPauseAudio();
-    /** Discard audio accumulated while backgrounded, restart output, and
-     *  return the number of stale SDK packets removed. */
+    /** Discard stale audio, resume SDK audio processing/device output, and
+     *  return the number of stale SDK packets removed. Video is untouched. */
     public native int clientResumeAudio();
     public native void clientDestroy();
     public native int clientSetDimensions(int x, int y);

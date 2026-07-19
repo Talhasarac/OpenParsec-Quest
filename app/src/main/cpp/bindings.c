@@ -157,31 +157,37 @@ Java_parsec_bindings_Parsec_clientSetConfig(JNIEnv *env, jobject instance,
     return (jint) status;
 }
 
-JNIEXPORT void JNICALL
-Java_parsec_bindings_Parsec_clientPollAudio(JNIEnv *env, jobject instance)
+JNIEXPORT jboolean JNICALL
+Java_parsec_bindings_Parsec_clientPollAudio(
+    JNIEnv *env, jobject instance, jint timeoutMs)
 {
     Parsec *parsec = getPointer(env, instance, "parsec");
     struct aaudio *aaudio = getPointer(env, instance, "aaudio");
     if (!parsec || !aaudio)
-        return;
+        return JNI_FALSE;
 
-    // PollAudio returns one queued packet at a time. Calling it only once per
-    // video frame leaves the SDK queue permanently behind whenever audio
-    // packets arrive faster than frames render. Drain the current backlog;
-    // aaudio_play uses a bounded, non-blocking device buffer and drops excess
-    // stale packets so playback catches the live edge instead of accumulating
-    // seconds of stable delay.
-    const int max_packets_per_frame = 128;
-    for (int packet = 0; packet < max_packets_per_frame; packet++) {
-        if (ParsecClientPollAudio(parsec, aaudio_play, 0, aaudio) != PARSEC_OK)
-            break;
-    }
+    // Poll one packet per call. Java owns a dedicated background-priority
+    // audio loop, so no audio work or queue drain can extend a GL frame.
+    uint32_t timeout = timeoutMs <= 0 ? 0U
+        : (uint32_t) (timeoutMs > 100 ? 100 : timeoutMs);
+    return ParsecClientPollAudio(parsec, aaudio_play, timeout, aaudio)
+        == PARSEC_OK ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL
 Java_parsec_bindings_Parsec_clientPauseAudio(JNIEnv *env, jobject instance)
 {
+    Parsec *parsec = getPointer(env, instance, "parsec");
     struct aaudio *aaudio = getPointer(env, instance, "aaudio");
+    // Audio-only SDK pause stops host-audio processing to save resources.
+    // pauseVideo is deliberately false: sound can never suspend video.
+    if (parsec) {
+        ParsecStatus status = ParsecClientPause(parsec, false, true);
+        if (status != PARSEC_OK) {
+            __android_log_print(ANDROID_LOG_WARN, "PARSEC",
+                "failed to pause client audio: %d", status);
+        }
+    }
     aaudio_pause(aaudio);
 }
 
@@ -211,6 +217,12 @@ Java_parsec_bindings_Parsec_clientResumeAudio(JNIEnv *env, jobject instance)
         drained++;
     }
 
+    // Resume audio only. Video has remained live throughout.
+    ParsecStatus status = ParsecClientPause(parsec, false, false);
+    if (status != PARSEC_OK) {
+        __android_log_print(ANDROID_LOG_WARN, "PARSEC",
+            "failed to resume client audio: %d", status);
+    }
     aaudio_resume(aaudio);
     return (jint) drained;
 }
