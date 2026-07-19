@@ -34,6 +34,8 @@ The upstream Android APK may already run on a Quest when sideloaded.
 - adds the official Android client's Constant FPS host setting
 - adds a real H.264 / Prefer H.265 selector using the newer Parsec Android
   client configuration API, with automatic H.264 fallback
+- adds default-on network and device performance warning icons, with
+  hysteresis to avoid flashing and an Overlay Warnings setting to hide them
 - disables updates to the differently packaged upstream phone build
 - includes small CMake, native audio-struct, and Android resource fixes needed
   by this build
@@ -76,13 +78,13 @@ Requirements:
 The APK is written to:
 
 ```text
-app/build/outputs/apk/release/openparsec-quest2-0.4.7-quest-release.apk
+app/build/outputs/apk/release/openparsec-quest2-0.4.8-quest-release.apk
 ```
 
 With developer mode and ADB available, install it using:
 
 ```bash
-adb install -r app/build/outputs/apk/release/openparsec-quest2-0.4.7-quest-release.apk
+adb install -r app/build/outputs/apk/release/openparsec-quest2-0.4.8-quest-release.apk
 ```
 
 ## Credits

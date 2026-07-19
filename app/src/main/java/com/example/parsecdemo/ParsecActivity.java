@@ -148,6 +148,10 @@ public class ParsecActivity extends Activity {
     private android.content.ClipboardManager clipboard;
     /** Stats HUD (latency / FPS), shown when Settings → Show Performance Stats. */
     private TextView statsView;
+    /** Compact official-style network/device warnings, enabled by default. */
+    private PerformanceWarningOverlay performanceWarningOverlay;
+    private final PerformanceWarningTracker performanceWarningTracker =
+            new PerformanceWarningTracker();
     private long lastFrameSnapshot = 0L;
     private long lastFpsSampleMs = 0L;
     private int currentFps = 0;
@@ -247,6 +251,7 @@ public class ParsecActivity extends Activity {
         root.addView(cursorView, cursorLp);
 
         buildStatsView();
+        buildPerformanceWarningOverlay();
 
         vibrator = (android.os.Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
         clipboard = (android.content.ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
@@ -612,12 +617,15 @@ public class ParsecActivity extends Activity {
         ioHandler.removeCallbacks(ioPump);
         ioTickCount = 0L;
         lastFpsSampleMs = 0L;
+        resetPerformanceWarningOverlay();
         syncStatsHud();
+        syncPerformanceWarningOverlay();
         ioHandler.post(ioPump);
     }
 
     private void stopIoPump() {
         if (ioHandler != null) ioHandler.removeCallbacks(ioPump);
+        resetPerformanceWarningOverlay();
         // Drop relative mode so a paused/ended session doesn't leave the cursor hidden.
         if (surface != null && lastRelativeMode) {
             surface.setRelativeMouseMode(false);
@@ -701,10 +709,19 @@ public class ParsecActivity extends Activity {
             Log.w("ParsecViewport", "Could not read decoded stream size", t);
         }
 
-        // --- Stats HUD (refresh ~2x/sec) ---
-        if (statsView != null && statsView.getVisibility() == View.VISIBLE
-                && (ioTickCount % 5 == 0)) {
-            updateStatsHud();
+        // --- Stats + compact warning overlays (refresh ~2x/sec) ---
+        if (ioTickCount % 5 == 0) {
+            boolean showStats = statsView != null
+                    && statsView.getVisibility() == View.VISIBLE;
+            boolean showWarnings = settings.showPerformanceWarnings();
+            if (!showWarnings) resetPerformanceWarningOverlay();
+            if (showStats || showWarnings) {
+                PerformanceSample sample = readPerformanceSample();
+                if (sample != null) {
+                    if (showStats) updateStatsHud(sample);
+                    if (showWarnings) updatePerformanceWarningOverlay(sample);
+                }
+            }
         }
 
         if (ioHandler != null) ioHandler.postDelayed(ioPump, IO_PUMP_INTERVAL_MS);
@@ -749,8 +766,92 @@ public class ParsecActivity extends Activity {
         statsView.setVisibility(settings.showStats() ? View.VISIBLE : View.GONE);
     }
 
-    private void updateStatsHud() {
-        if (parsec == null || statsView == null) return;
+    private void buildPerformanceWarningOverlay() {
+        performanceWarningOverlay = new PerformanceWarningOverlay(this);
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP | Gravity.END);
+        lp.topMargin = dp(8);
+        lp.rightMargin = dp(8);
+        root.addView(performanceWarningOverlay, lp);
+    }
+
+    /** Apply the default-on preference immediately after connect/settings. */
+    private void syncPerformanceWarningOverlay() {
+        if (!settings.showPerformanceWarnings()) {
+            resetPerformanceWarningOverlay();
+        }
+    }
+
+    /** Clear both visible badges and every partial hysteresis streak. */
+    private void resetPerformanceWarningOverlay() {
+        performanceWarningTracker.reset();
+        if (performanceWarningOverlay != null) {
+            performanceWarningOverlay.setWarnings(false, false);
+        }
+    }
+
+    private static final class PerformanceSample {
+        long packets;
+        long retransmits;
+        long queuedFrames;
+        float decodeLatencyMs;
+        float networkLatencyMs;
+        float encodeLatencyMs;
+        boolean networkFailure;
+        boolean decoderFellBack;
+        boolean h265;
+    }
+
+    /**
+     * Read counters, latencies, decoder state, and failure state atomically.
+     * A null result is a transient unavailable status and is intentionally
+     * ignored instead of being classified as either healthy or unhealthy.
+     */
+    private PerformanceSample readPerformanceSample() {
+        if (parsec == null) return null;
+        final long[] raw;
+        try {
+            raw = parsec.clientGetPerformanceSnapshot();
+        } catch (Throwable t) {
+            return null;
+        }
+        if (raw == null || raw.length < 5) return null;
+
+        PerformanceSample sample = new PerformanceSample();
+        sample.packets = raw[0] & 0xFFFFFFFFL;
+        sample.retransmits = raw[1] & 0xFFFFFFFFL;
+        sample.queuedFrames = raw[2] & 0xFFFFFFFFL;
+        sample.decodeLatencyMs = Float.intBitsToFloat((int) (raw[3] >>> 32));
+        sample.networkLatencyMs = Float.intBitsToFloat((int) raw[3]);
+        sample.encodeLatencyMs = Float.intBitsToFloat((int) (raw[4] >>> 32));
+        int flags = (int) raw[4];
+        sample.networkFailure = (flags & 1) != 0;
+        sample.decoderFellBack = (flags & (1 << 1)) != 0;
+        sample.h265 = (flags & (1 << 2)) != 0;
+        return sample;
+    }
+
+    private void updatePerformanceWarningOverlay(PerformanceSample sample) {
+        if (performanceWarningOverlay == null) return;
+        boolean streamActive = activeStreamWidth > 0 && activeStreamHeight > 0;
+        PerformanceWarningTracker.State state = performanceWarningTracker.update(
+                streamActive,
+                sample.networkFailure,
+                sample.networkLatencyMs,
+                sample.decodeLatencyMs,
+                settings.preferredFps(),
+                sample.queuedFrames,
+                sample.decoderFellBack,
+                sample.packets,
+                sample.retransmits);
+        performanceWarningOverlay.setWarnings(
+                state.networkWarning, state.deviceWarning);
+    }
+
+    private void updateStatsHud(PerformanceSample sample) {
+        if (statsView == null) return;
         // FPS from the surface frame counter over the elapsed wall time.
         long now = android.os.SystemClock.uptimeMillis();
         if (surface != null) {
@@ -762,30 +863,25 @@ public class ParsecActivity extends Activity {
             lastFrameSnapshot = frames;
             lastFpsSampleMs = now;
         }
-        float dec, net, enc;
-        boolean fellBack, h265;
-        try {
-            dec = parsec.clientGetDecodeLatency();
-            net = parsec.clientGetNetworkLatency();
-            enc = parsec.clientGetEncodeLatency();
-            fellBack = parsec.clientDecoderFellBack();
-            h265 = parsec.clientIsH265();
-        } catch (Throwable t) { return; }
-
         StringBuilder sb = new StringBuilder();
         sb.append(currentFps).append(" fps  ")
-                .append(h265 ? "H.265" : "H.264");
+                .append(sample.h265 ? "H.265" : "H.264");
         if (activeStreamWidth > 0 && activeStreamHeight > 0) {
             sb.append("  ").append(activeStreamWidth).append('×')
                     .append(activeStreamHeight);
         }
         sb.append(String.format(java.util.Locale.US,
-                "  ping %.0fms\ndec %.1fms  enc %.1fms", net, dec, enc));
-        if (fellBack) sb.append("  [SW decode]");
+                "  ping %.0fms\ndec %.1fms  enc %.1fms",
+                sample.networkLatencyMs,
+                sample.decodeLatencyMs,
+                sample.encodeLatencyMs));
+        if (sample.decoderFellBack) sb.append("  [SW decode]");
         // Inline warnings — colorize red when degraded.
-        boolean warn = net > 80f || dec > 30f || fellBack;
+        boolean warn = sample.networkLatencyMs > 80f
+                || sample.decodeLatencyMs > 30f
+                || sample.decoderFellBack;
         statsView.setTextColor(warn ? 0xFFFF8A80 : 0xFFB9F6CA);
-        if (net > 120f) sb.append("\n⚠ high latency");
+        if (sample.networkLatencyMs > 120f) sb.append("\n⚠ high latency");
         statsView.setText(sb.toString());
     }
 
@@ -908,6 +1004,7 @@ public class ParsecActivity extends Activity {
         isReconnecting = true;
         statusView.setText("Reconnecting…");
         statusView.setVisibility(View.VISIBLE);
+        resetPerformanceWarningOverlay();
         resetQuestMouseShortcuts();
         GamepadInputHandler.unplug(parsec);
 
@@ -1885,6 +1982,7 @@ public class ParsecActivity extends Activity {
             applySettingsToSurface();
             if (!settings.questControllerShortcuts()) resetQuestMouseShortcuts();
             syncStatsHud(); // user may have toggled Show Performance Stats
+            syncPerformanceWarningOverlay();
             boolean resolutionChanged = settingsSnapshotValid
                     && openedResolutionIndex != settings.resolutionIndex();
             boolean decoderChanged = settingsSnapshotValid

@@ -423,6 +423,54 @@ Java_parsec_bindings_Parsec_clientIsH265(JNIEnv *env, jobject instance)
     return status.decoder[0].h265 ? JNI_TRUE : JNI_FALSE;
 }
 
+/** Return all performance-overlay values from one status read so the Java
+ *  classifier never combines counters and latencies from different frames.
+ *
+ *  values[0] packetsSent (unsigned 32-bit)
+ *  values[1] fastRTs + slowRTs (unsigned 32-bit, wrapping)
+ *  values[2] queuedFrames
+ *  values[3] decodeLatency float bits << 32 | networkLatency float bits
+ *  values[4] encodeLatency float bits << 32 | flags
+ *            flags: bit 0 network failure, bit 1 decoder fallback, bit 2 H.265
+ */
+JNIEXPORT jlongArray JNICALL
+Java_parsec_bindings_Parsec_clientGetPerformanceSnapshot(
+    JNIEnv *env, jobject instance)
+{
+    Parsec *parsec = getPointer(env, instance, "parsec");
+    if (!parsec) return NULL;
+    ParsecClientStatus status = {0};
+    if (ParsecClientGetStatus(parsec, &status) != PARSEC_OK) return NULL;
+
+    const ParsecMetrics *metrics = &status.self.metrics[0];
+    uint32_t decBits = 0;
+    uint32_t netBits = 0;
+    uint32_t encBits = 0;
+    memcpy(&decBits, &metrics->decodeLatency, sizeof(decBits));
+    memcpy(&netBits, &metrics->networkLatency, sizeof(netBits));
+    memcpy(&encBits, &metrics->encodeLatency, sizeof(encBits));
+
+    uint32_t flags = status.networkFailure ? 1U : 0U;
+    if (!g_requestedSoftwareDecoder
+        && status.decoder[0].width > 0
+        && status.decoder[0].index == 0) {
+        flags |= 1U << 1;
+    }
+    if (status.decoder[0].h265) flags |= 1U << 2;
+
+    jlong values[5] = {
+        (jlong) metrics->packetsSent,
+        (jlong) (uint32_t) (metrics->fastRTs + metrics->slowRTs),
+        (jlong) metrics->queuedFrames,
+        ((jlong) decBits << 32) | (jlong) netBits,
+        ((jlong) encBits << 32) | (jlong) flags,
+    };
+    jlongArray result = (*env)->NewLongArray(env, 5);
+    if (!result) return NULL;
+    (*env)->SetLongArrayRegion(env, result, 0, 5, values);
+    return result;
+}
+
 /** Atomically return the active decoder dimensions as (width << 32 | height). */
 JNIEXPORT jlong JNICALL
 Java_parsec_bindings_Parsec_clientGetVideoSize(JNIEnv *env, jobject instance)

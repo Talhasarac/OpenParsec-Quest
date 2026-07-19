@@ -140,6 +140,14 @@ public final class SettingsPanel {
                 + "host or another client cannot use HEVC. Host Default leaves "
                 + "bandwidth unchanged."));
         addDivider(a, graphics);
+        graphics.addView(rowToggle(a, "Overlay Warnings",
+                s.showPerformanceWarnings(), s::showPerformanceWarnings));
+        addDivider(a, graphics);
+        graphics.addView(rowNote(a,
+                "Shows small network or device icons after sustained "
+                + "performance problems. Enabled by default; tap an icon "
+                + "to see what to adjust."));
+        addDivider(a, graphics);
         graphics.addView(rowToggle(a, "Show Performance Stats",
                 s.showStats(), s::showStats));
         list.addView(graphics);

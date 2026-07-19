@@ -60,6 +60,10 @@ public class Parsec {
     public native float clientGetEncodeLatency();   // ms
     public native boolean clientDecoderFellBack();  // true if SW-decode fallback occurred
     public native boolean clientIsH265();            // actual negotiated stream codec
+    /** One atomic status snapshot for stats and warning overlays:
+     *  [packets, retransmits, queuedFrames, decBits|netBits, encBits|flags].
+     *  Flags: bit 0 network failure, bit 1 decoder fallback, bit 2 H.265. */
+    public native long[] clientGetPerformanceSnapshot();
     /** Active decoder size packed as (width << 32 | height), or zero. */
     public native long clientGetVideoSize();
 

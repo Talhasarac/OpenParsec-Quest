@@ -112,6 +112,14 @@ public final class Settings {
     public boolean showStats() { return sp.getBoolean("showStats", false); }
     public void showStats(boolean v) { sp.edit().putBoolean("showStats", v).apply(); }
 
+    /** Show compact network/device warning icons over an active stream. */
+    public boolean showPerformanceWarnings() {
+        return sp.getBoolean("showPerformanceWarnings", true);
+    }
+    public void showPerformanceWarnings(boolean v) {
+        sp.edit().putBoolean("showPerformanceWarnings", v).apply();
+    }
+
     // ---- ParsecClientConfig mapping helpers ----
     // A zero resolution selects the measured client panel size. ParsecActivity
     // resolves it immediately before sending the owner video configuration.
