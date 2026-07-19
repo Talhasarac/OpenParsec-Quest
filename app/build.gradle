@@ -9,8 +9,8 @@ android {
         applicationId "com.openparsec.quest"
         minSdkVersion 28
         targetSdkVersion 34
-        versionCode 8
-        versionName "0.4.4-quest"
+        versionCode 9
+        versionName "0.4.5-quest"
         setProperty("archivesBaseName", "openparsec-quest2-${versionName}")
         ndk {
             abiFilters 'arm64-v8a'

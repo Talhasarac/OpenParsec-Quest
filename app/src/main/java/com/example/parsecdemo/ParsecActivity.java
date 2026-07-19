@@ -8,6 +8,7 @@ import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.hardware.input.InputManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.text.Editable;
@@ -16,6 +17,7 @@ import android.text.TextWatcher;
 import android.util.Log;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.InputDevice;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
@@ -76,6 +78,23 @@ public class ParsecActivity extends Activity {
             new android.os.Handler(android.os.Looper.getMainLooper());
     private boolean questCadHoldPending = false;
     private static final long QUEST_CAD_HOLD_MS = 900L;
+    private static final int MOUSE_MIDDLE_BUTTON = 2;
+    private static final float QUEST_SCROLL_DEADZONE = 0.20f;
+    private static final float QUEST_SCROLL_MIN_TICKS_PER_SECOND = 3f;
+    private static final float QUEST_SCROLL_MAX_TICKS_PER_SECOND = 14f;
+    private static final long QUEST_SCROLL_TICK_MS = 16L;
+    /** Failsafe for a controller that disappears without sending neutral. */
+    private static final long QUEST_SCROLL_STALE_MS = 5000L;
+    private float questScrollAxis = 0f;
+    private float questScrollRemainder = 0f;
+    private long questScrollLastTickMs = 0L;
+    private long questScrollLastMotionMs = 0L;
+    private int questScrollDeviceId = -1;
+    private boolean questScrollRunning = false;
+    private boolean questMiddleHeld = false;
+    private int questMiddleDeviceId = -1;
+    private InputManager inputManager;
+    private final Runnable questScrollAction = this::tickQuestRightStickScroll;
     private final Runnable questCadHoldAction = () -> {
         if (!questCadHoldPending) return;
         questCadHoldPending = false;
@@ -83,6 +102,20 @@ public class ParsecActivity extends Activity {
         sendCtrlAltDel();
         Toast.makeText(this, "Sent Ctrl+Alt+Delete", Toast.LENGTH_SHORT).show();
     };
+    private final InputManager.InputDeviceListener questInputDeviceListener =
+            new InputManager.InputDeviceListener() {
+                @Override public void onInputDeviceAdded(int deviceId) {}
+                @Override public void onInputDeviceChanged(int deviceId) {
+                    if (deviceId == questScrollDeviceId || deviceId == questMiddleDeviceId) {
+                        resetQuestMouseShortcuts();
+                    }
+                }
+                @Override public void onInputDeviceRemoved(int deviceId) {
+                    if (deviceId == questScrollDeviceId || deviceId == questMiddleDeviceId) {
+                        resetQuestMouseShortcuts();
+                    }
+                }
+            };
     /** When the IME pushes a user-positioned mouse row out of the way, we
      *  stash the original Y here and restore it when the IME closes. Null
      *  while the user-positioned row is in its normal place. */
@@ -172,6 +205,11 @@ public class ParsecActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         settings = new Settings(this);
+        inputManager = (InputManager) getSystemService(Context.INPUT_SERVICE);
+        if (inputManager != null) {
+            inputManager.registerInputDeviceListener(
+                    questInputDeviceListener, questShortcutHandler);
+        }
         applyOrientationFromSettings();
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         // SOFT_INPUT_ADJUST_RESIZE causes WindowInsets.ime() to dispatch so
@@ -332,7 +370,7 @@ public class ParsecActivity extends Activity {
                 if (surface == null) return;
                 surface.sendButtonExternal(parsecButton, pressed);
                 heldButtonCount = Math.max(0, heldButtonCount + (pressed ? 1 : -1));
-                surface.setExternalButtonHeld(heldButtonCount > 0);
+                syncExternalButtonHeld();
             }
             @Override public void onScrollDelta(int ticksX, int ticksY) {
                 if (surface == null) return;
@@ -867,6 +905,7 @@ public class ParsecActivity extends Activity {
         isReconnecting = true;
         statusView.setText("Reconnecting…");
         statusView.setVisibility(View.VISIBLE);
+        resetQuestMouseShortcuts();
 
         // KEEP THE GL SURFACE ALIVE across reconnects. Tearing it down and
         // recreating it forces a new EGL context, and the Parsec SDK's cached
@@ -988,6 +1027,7 @@ public class ParsecActivity extends Activity {
 
     @Override
     public boolean dispatchGenericMotionEvent(MotionEvent ev) {
+        if (handleQuestRightStickScroll(ev)) return true;
         // Forward physical gamepad stick / trigger axis updates.
         if (GamepadInputHandler.handleMotionEvent(parsec, ev)) return true;
         return super.dispatchGenericMotionEvent(ev);
@@ -1028,6 +1068,29 @@ public class ParsecActivity extends Activity {
         }
 
         int keyCode = event.getKeyCode();
+        InputDevice device = event.getDevice();
+        boolean isRightStickClick = keyCode == KeyEvent.KEYCODE_BUTTON_THUMBR
+                || (keyCode == KeyEvent.KEYCODE_BUTTON_THUMBL
+                        && QuestPlatform.isRightTouchController(device));
+        if (isRightStickClick) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN
+                    && event.getRepeatCount() == 0 && !questMiddleHeld) {
+                questMiddleHeld = true;
+                questMiddleDeviceId = event.getDeviceId();
+                if (surface != null) {
+                    surface.sendButtonExternal(MOUSE_MIDDLE_BUTTON, true);
+                    syncExternalButtonHeld();
+                }
+                Toast.makeText(this, "Middle mouse", Toast.LENGTH_SHORT).show();
+            } else if (event.getAction() == KeyEvent.ACTION_UP) {
+                releaseQuestMiddleClick();
+            }
+            // Consume DOWN/UP so the press is not also sent as a gamepad
+            // right-stick button.
+            return event.getAction() == KeyEvent.ACTION_DOWN
+                    || event.getAction() == KeyEvent.ACTION_UP;
+        }
+
         boolean isCadButton = keyCode == KeyEvent.KEYCODE_BUTTON_B
                 || keyCode == KeyEvent.KEYCODE_BACK;
         if (isCadButton) {
@@ -1073,6 +1136,173 @@ public class ParsecActivity extends Activity {
     private void cancelQuestCadHold() {
         questCadHoldPending = false;
         questShortcutHandler.removeCallbacks(questCadHoldAction);
+    }
+
+    /**
+     * Convert the right Touch thumbstick into a continuously repeating mouse
+     * wheel. Separately exposed right controllers normally use X/Y; combined
+     * Android gamepad-style devices use Z/RZ or RX/RY.
+     */
+    private boolean handleQuestRightStickScroll(MotionEvent event) {
+        if (settings == null || !settings.questControllerShortcuts()
+                || !QuestPlatform.isTouchController(event.getDevice())
+                || !GamepadInputHandler.isGamepadSource(event.getSource())) {
+            return false;
+        }
+
+        InputDevice device = event.getDevice();
+        int verticalAxis = questRightStickVerticalAxis(device, event.getSource());
+        if (verticalAxis < 0) return false;
+
+        if (event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+            stopQuestRightStickScroll();
+            return true;
+        }
+        if (event.getActionMasked() != MotionEvent.ACTION_MOVE) return false;
+
+        float axis = centeredQuestAxis(event, device, verticalAxis);
+        long now = android.os.SystemClock.uptimeMillis();
+        questScrollLastMotionMs = now;
+        questScrollDeviceId = event.getDeviceId();
+
+        if (axis == 0f) {
+            stopQuestRightStickScroll();
+            return true;
+        }
+
+        // Do not let a remainder from the opposite direction delay the first
+        // wheel event after the user reverses the stick.
+        if (questScrollAxis != 0f && Math.signum(axis) != Math.signum(questScrollAxis)) {
+            questScrollRemainder = 0f;
+        }
+        questScrollAxis = axis;
+        if (!questScrollRunning) {
+            questScrollRunning = true;
+            questScrollLastTickMs = now;
+            questShortcutHandler.post(questScrollAction);
+        }
+        return true;
+    }
+
+    private int questRightStickVerticalAxis(InputDevice device, int source) {
+        if (device == null) return -1;
+        // Quest commonly exposes each Touch controller independently, in
+        // which case its one thumbstick is X/Y and the side is in the device
+        // identity/capabilities.
+        if (QuestPlatform.isRightTouchController(device)
+                && questMotionRange(device, MotionEvent.AXIS_Y, source) != null) {
+            return MotionEvent.AXIS_Y;
+        }
+        // Android's generic gamepad profile specifies Z/RZ for the right
+        // stick. Some controllers instead publish RX/RY.
+        if (questMotionRange(device, MotionEvent.AXIS_Z, source) != null
+                && questMotionRange(device, MotionEvent.AXIS_RZ, source) != null) {
+            return MotionEvent.AXIS_RZ;
+        }
+        if (questMotionRange(device, MotionEvent.AXIS_RX, source) != null
+                && questMotionRange(device, MotionEvent.AXIS_RY, source) != null) {
+            return MotionEvent.AXIS_RY;
+        }
+        // Tolerate incomplete axis metadata from Horizon builds that expose
+        // only the vertical member of the pair.
+        if (questMotionRange(device, MotionEvent.AXIS_RZ, source) != null) {
+            return MotionEvent.AXIS_RZ;
+        }
+        if (questMotionRange(device, MotionEvent.AXIS_RY, source) != null) {
+            return MotionEvent.AXIS_RY;
+        }
+        return -1;
+    }
+
+    private InputDevice.MotionRange questMotionRange(
+            InputDevice device, int axis, int source) {
+        InputDevice.MotionRange range = device.getMotionRange(axis, source);
+        return range != null ? range : device.getMotionRange(axis);
+    }
+
+    private float centeredQuestAxis(
+            MotionEvent event, InputDevice device, int axis) {
+        InputDevice.MotionRange range =
+                questMotionRange(device, axis, event.getSource());
+        float raw = event.getAxisValue(axis);
+        float deadzone = Math.max(
+                QUEST_SCROLL_DEADZONE, range == null ? 0f : range.getFlat());
+        float magnitude = Math.abs(raw);
+        if (magnitude <= deadzone) return 0f;
+
+        float endpoint = 1f;
+        if (range != null) {
+            endpoint = raw >= 0f ? range.getMax() : Math.abs(range.getMin());
+        }
+        if (endpoint <= deadzone) endpoint = 1f;
+        float normalized = (magnitude - deadzone) / (endpoint - deadzone);
+        normalized = Math.max(0f, Math.min(1f, normalized));
+        return Math.copySign(normalized, raw);
+    }
+
+    private void tickQuestRightStickScroll() {
+        if (!questScrollRunning || settings == null
+                || !settings.questControllerShortcuts() || surface == null) {
+            stopQuestRightStickScroll();
+            return;
+        }
+
+        long now = android.os.SystemClock.uptimeMillis();
+        if (now - questScrollLastMotionMs > QUEST_SCROLL_STALE_MS) {
+            stopQuestRightStickScroll();
+            return;
+        }
+
+        float elapsedSeconds = Math.min(
+                0.10f, Math.max(0f, now - questScrollLastTickMs) / 1000f);
+        questScrollLastTickMs = now;
+        float magnitude = Math.abs(questScrollAxis);
+        // A squared curve keeps small stick movements precise while still
+        // allowing fast page scrolling near the edge.
+        float rate = QUEST_SCROLL_MIN_TICKS_PER_SECOND
+                + (QUEST_SCROLL_MAX_TICKS_PER_SECOND
+                        - QUEST_SCROLL_MIN_TICKS_PER_SECOND)
+                        * magnitude * magnitude;
+        questScrollRemainder += Math.signum(questScrollAxis)
+                * rate * elapsedSeconds;
+        int ticks = (int) questScrollRemainder;
+        if (ticks != 0) {
+            questScrollRemainder -= ticks;
+            // Android Y is positive down, matching Parsec wheel Y.
+            surface.sendScrollDelta(0, ticks);
+        }
+        questShortcutHandler.postDelayed(questScrollAction, QUEST_SCROLL_TICK_MS);
+    }
+
+    private void stopQuestRightStickScroll() {
+        questShortcutHandler.removeCallbacks(questScrollAction);
+        questScrollRunning = false;
+        questScrollAxis = 0f;
+        questScrollRemainder = 0f;
+        questScrollLastTickMs = 0L;
+        questScrollLastMotionMs = 0L;
+        questScrollDeviceId = -1;
+    }
+
+    private void releaseQuestMiddleClick() {
+        if (questMiddleHeld && surface != null) {
+            surface.sendButtonExternal(MOUSE_MIDDLE_BUTTON, false);
+        }
+        questMiddleHeld = false;
+        questMiddleDeviceId = -1;
+        syncExternalButtonHeld();
+    }
+
+    private void syncExternalButtonHeld() {
+        if (surface != null) {
+            surface.setExternalButtonHeld(heldButtonCount > 0 || questMiddleHeld);
+        }
+    }
+
+    private void resetQuestMouseShortcuts() {
+        cancelQuestCadHold();
+        stopQuestRightStickScroll();
+        releaseQuestMiddleClick();
     }
 
     private void sendAltTab() {
@@ -1643,6 +1873,7 @@ public class ParsecActivity extends Activity {
             root.removeView(settingsOverlay);
             settingsOverlay = null;
             applySettingsToSurface();
+            if (!settings.questControllerShortcuts()) resetQuestMouseShortcuts();
             syncStatsHud(); // user may have toggled Show Performance Stats
             boolean resolutionChanged = settingsSnapshotValid
                     && openedResolutionIndex != settings.resolutionIndex();
@@ -1667,6 +1898,7 @@ public class ParsecActivity extends Activity {
             settingsSnapshotValid = false;
 
             if (resolutionChanged && surface != null) {
+                resetQuestMouseShortcuts();
                 surface.prepareForStreamResize();
             }
             if (parsec != null && decoderChanged) {
@@ -1813,6 +2045,7 @@ public class ParsecActivity extends Activity {
         // the matching release events if the gesture was interrupted by fold.
         if (imeBar != null) imeBar.clearLatchedModifiers();
         heldButtonCount = 0;
+        resetQuestMouseShortcuts();
         // Re-clamp user-positioned mouse-button row so it can't drift offscreen.
         reclampMouseRow();
         // After the next layout pass, reset touch state & cursor against the
@@ -1861,7 +2094,7 @@ public class ParsecActivity extends Activity {
 
     @Override
     protected void onPause() {
-        cancelQuestCadHold();
+        resetQuestMouseShortcuts();
         if (surface != null) {
             // Release cached/synthetic mouse state before Horizon can drop the
             // matching UP event while the panel is backgrounded.
@@ -1903,8 +2136,21 @@ public class ParsecActivity extends Activity {
     }
 
     @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        // Horizon may move controller input to a system panel without fully
+        // pausing this activity. Release repeating/held mouse state before
+        // the matching neutral or key-up event can be routed elsewhere.
+        if (!hasFocus) resetQuestMouseShortcuts();
+    }
+
+    @Override
     protected void onDestroy() {
-        cancelQuestCadHold();
+        resetQuestMouseShortcuts();
+        if (inputManager != null) {
+            inputManager.unregisterInputDeviceListener(questInputDeviceListener);
+            inputManager = null;
+        }
         stopHealthWatchdog();
         stopIoPump();
         if (surface != null) surface.shutdown();

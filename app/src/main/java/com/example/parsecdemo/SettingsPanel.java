@@ -178,6 +178,7 @@ public final class SettingsPanel {
             misc.addView(rowNote(a,
                     "When Horizon exposes Touch buttons: A = Alt+Tab, "
                     + "X = Copy, Y = Paste, hold B = Ctrl+Alt+Delete. "
+                    + "Right stick = scroll; press it = middle mouse. "
                     + "A paired gamepad is not remapped."));
         }
         list.addView(misc);
