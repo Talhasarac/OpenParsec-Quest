@@ -78,6 +78,19 @@ public class LoginActivity extends AppCompatActivity {
         wmLp.gravity = Gravity.CENTER_HORIZONTAL;
         form.addView(wordmark, wmLp);
 
+        if (QuestPlatform.isQuest(this)) {
+            TextView questHint = new TextView(this);
+            questHint.setText(R.string.quest_control_hint);
+            questHint.setGravity(Gravity.CENTER);
+            questHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+            questHint.setTextColor(MaterialUi.color(this,
+                    com.google.android.material.R.attr.colorOnSurfaceVariant));
+            LinearLayout.LayoutParams hintLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            hintLp.bottomMargin = dp(16);
+            form.addView(questHint, hintLp);
+        }
+
         emailField = new TextInputEditText(this);
         emailField.setText(settings.lastEmail());
         TextInputLayout emailLayout = MaterialUi.textField(this, "Email", emailField,
@@ -142,7 +155,11 @@ public class LoginActivity extends AppCompatActivity {
 
         setContentView(root);
 
-        UpdateChecker.checkInBackground(this);
+        // The upstream Android updater installs a differently packaged build.
+        // Quest releases are installed through ADB/SideQuest instead.
+        if (!QuestPlatform.isQuest(this)) {
+            UpdateChecker.checkInBackground(this);
+        }
     }
 
     private TextView buildCreditsView() {

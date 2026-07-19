@@ -1,4 +1,50 @@
-# <p align="center">![icon](app/src/main/res/drawable/parsec_logo.png) ![OpenParsec](app/src/main/res/drawable/openparsec_wordmark.png)</p>
+# OpenParsec Quest 2
+
+A Quest-focused, resizable 2D-panel build of the community Android
+[OpenParsec port](https://github.com/nomadsgalaxy/OpenParsec), derived from
+[hugeBlack/OpenParsec](https://github.com/hugeBlack/OpenParsec).
+
+This is deliberately a standard Android activity, not an immersive OpenXR
+application. Horizon OS therefore presents it as a movable screen that can be
+resized and positioned similarly to other 2D media apps.
+
+Quest-specific changes:
+
+- ARM64-only APK with the package id `com.openparsec.quest`
+- landscape, resizable activities for a widescreen panel
+- direct pointer input and 1080p/60 defaults on Quest hardware
+- Quest controller guidance on the login screen
+- upstream phone-build updates disabled to avoid package/signature conflicts
+
+## Build and install
+
+Requirements: Java 17, Android SDK API 34, NDK `26.3.11579264`, and CMake
+3.22.1.
+
+```bash
+./gradlew assembleRelease
+adb install -r app/build/outputs/apk/release/openparsec-quest2-0.1.0-quest-release.apk
+```
+
+The application appears under the headset's unknown-sources applications.
+Point at the panel and pull the controller trigger to click. A paired
+Bluetooth keyboard, mouse, or gamepad is recommended for desktop/game input.
+
+## Important status
+
+The included ARM64 Parsec SDK binary is the legacy Android SDK binary carried
+by the upstream port. The current Parsec login and host APIs are supplied by
+the active Android OpenParsec port, but connection compatibility remains
+dependent on Parsec's service and should be validated on-device before
+treating this as reliable.
+
+The OpenParsec source is GPL-3.0. The bundled proprietary Parsec SDK remains
+subject to Parsec's separate SDK terms. Verify those terms before
+redistributing an APK or the SDK binary.
+
+---
+
+# Upstream Android OpenParsec documentation
 
 [![GitHub stars](https://img.shields.io/github/stars/nomadsgalaxy/OpenParsec?style=flat-square)](https://github.com/nomadsgalaxy/OpenParsec/stargazers)
 [![GitHub forks](https://img.shields.io/github/forks/nomadsgalaxy/OpenParsec?style=flat-square)](https://github.com/nomadsgalaxy/OpenParsec/network/members)

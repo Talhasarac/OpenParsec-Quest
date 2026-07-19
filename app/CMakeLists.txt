@@ -3,6 +3,7 @@
 
 # GENERAL SETTINGS
 cmake_minimum_required(VERSION 3.6.0)
+project(openparsec_quest C)
 
 # CODE LOCATIONS
 set(CPP_ROOT ${CMAKE_SOURCE_DIR}/src/main/cpp)

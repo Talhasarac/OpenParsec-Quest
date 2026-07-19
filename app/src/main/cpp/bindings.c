@@ -60,7 +60,7 @@ Java_parsec_bindings_Parsec_init(JNIEnv *env, jobject instance)
     Parsec *parsec = NULL;
     ParsecInit(PARSEC_VER, NULL, NULL, &parsec);
 
-    struct aaduio *aaudio = NULL;
+    struct aaudio *aaudio = NULL;
     aaudio_init(&aaudio);
 
     setPointer(env, instance, "parsec", parsec);
@@ -70,7 +70,7 @@ Java_parsec_bindings_Parsec_init(JNIEnv *env, jobject instance)
 JNIEXPORT void JNICALL
 Java_parsec_bindings_Parsec_destroy(JNIEnv *env, jobject instance)
 {
-    struct aaduio *aaudio = getPointer(env, instance, "aaudio");
+    struct aaudio *aaudio = getPointer(env, instance, "aaudio");
     aaudio_destroy(&aaudio);
 
     Parsec *parsec = getPointer(env, instance, "parsec");

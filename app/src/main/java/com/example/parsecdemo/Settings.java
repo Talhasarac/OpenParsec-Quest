@@ -26,13 +26,18 @@ public final class Settings {
             "Match Client", "1280×720", "1920×1080", "2560×1440", "3840×2160" };
 
     private final SharedPreferences sp;
+    private final boolean quest;
 
     public Settings(Context ctx) {
-        this.sp = ctx.getApplicationContext()
+        Context app = ctx.getApplicationContext();
+        this.sp = app
                 .getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        this.quest = QuestPlatform.isQuest(app);
     }
 
-    public String cursorMode() { return sp.getString("cursorMode", CURSOR_TOUCHPAD); }
+    public String cursorMode() {
+        return sp.getString("cursorMode", quest ? CURSOR_DIRECT : CURSOR_TOUCHPAD);
+    }
     public void cursorMode(String v) { sp.edit().putString("cursorMode", v).apply(); }
 
     public float cursorScale() { return sp.getFloat("cursorScale", 1.0f); }
@@ -50,7 +55,9 @@ public final class Settings {
     public String decoder() { return sp.getString("decoder", DECODER_H264); }
     public void decoder(String v) { sp.edit().putString("decoder", v).apply(); }
 
-    public int resolutionIndex() { return sp.getInt("resolutionIndex", 0); }
+    /** Quest defaults to 1080p: sharp enough for a large virtual screen while
+     *  staying comfortably inside Quest 2's low-latency H.264 decode budget. */
+    public int resolutionIndex() { return sp.getInt("resolutionIndex", quest ? 2 : 0); }
     public void resolutionIndex(int v) { sp.edit().putInt("resolutionIndex", v).apply(); }
 
     public int preferredFps() { return sp.getInt("preferredFps", 60); }
@@ -108,7 +115,9 @@ public final class Settings {
     public static final String ORIENT_AUTO      = "auto";
     public static final String ORIENT_LANDSCAPE = "landscape";
     public static final String ORIENT_PORTRAIT  = "portrait";
-    public String orientation() { return sp.getString("orientation", ORIENT_AUTO); }
+    public String orientation() {
+        return sp.getString("orientation", quest ? ORIENT_LANDSCAPE : ORIENT_AUTO);
+    }
     public void orientation(String v) { sp.edit().putString("orientation", v).apply(); }
 
     public String rightClickPosition() { return sp.getString("rightClickPosition", RIGHTCLICK_FIRST); }

@@ -354,11 +354,11 @@ public class HostListActivity extends AppCompatActivity {
         BottomNavigationView nav = new BottomNavigationView(this);
         nav.setBackgroundColor(MaterialUi.color(this,
                 com.google.android.material.R.attr.colorSurfaceContainer));
-        nav.getMenu().add(0, 1, 0, "Hosts").setIcon(R.drawable.ic_monitor);
-        nav.getMenu().add(0, 2, 1, "Friends").setIcon(R.drawable.ic_people);
-        nav.setSelectedItemId(1);
+        nav.getMenu().add(0, R.id.nav_hosts, 0, "Hosts").setIcon(R.drawable.ic_monitor);
+        nav.getMenu().add(0, R.id.nav_friends, 1, "Friends").setIcon(R.drawable.ic_people);
+        nav.setSelectedItemId(R.id.nav_hosts);
         nav.setOnItemSelectedListener(item -> {
-            switchTab(item.getItemId() == 1 ? Tab.HOSTS : Tab.FRIENDS);
+            switchTab(item.getItemId() == R.id.nav_hosts ? Tab.HOSTS : Tab.FRIENDS);
             return true;
         });
         return nav;

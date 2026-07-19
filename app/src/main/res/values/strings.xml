@@ -1,3 +1,4 @@
 <resources>
-    <string name="app_name">OpenParsec</string>
+    <string name="app_name">OpenParsec Quest</string>
+    <string name="quest_control_hint">Point and pull the trigger to click. Pair a Bluetooth keyboard or gamepad for full host input.</string>
 </resources>

@@ -9,16 +9,23 @@
     <uses-feature android:name="android.hardware.touchscreen" android:required="false"/>
     <uses-feature android:name="android.hardware.audio.output" android:required="false" />
     <uses-feature android:name="android.hardware.gamepad" android:required="false" />
+    <!-- Optional keeps this a normal resizable 2D Android panel instead of
+         claiming to be an immersive VR/OpenXR application. -->
+    <uses-feature android:name="android.hardware.vr.headtracking" android:required="false" />
 
     <application
         android:name=".ParsecApp"
         android:allowBackup="true"
+        android:hardwareAccelerated="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
+        android:resizeableActivity="true"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
-        <activity android:name=".MainActivity" android:exported="true">
+        <activity android:name=".MainActivity"
+            android:exported="true"
+            android:screenOrientation="landscape">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -26,13 +33,16 @@
         </activity>
         <activity android:name=".LoginActivity"
             android:exported="false"
+            android:screenOrientation="landscape"
             android:windowSoftInputMode="adjustPan"
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|density|uiMode" />
         <activity android:name=".HostListActivity"
             android:exported="false"
+            android:screenOrientation="landscape"
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|density|uiMode" />
         <activity android:name=".ParsecActivity"
             android:exported="false"
+            android:screenOrientation="landscape"
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|density|uiMode" />
     </application>
 </manifest>
