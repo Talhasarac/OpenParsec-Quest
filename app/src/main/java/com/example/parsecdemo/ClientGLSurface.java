@@ -231,6 +231,21 @@ public class ClientGLSurface extends GLSurfaceView {
         }
     }
 
+    /** Stop and flush device audio after the GL render thread has paused. */
+    public void pauseAudioForLifecycle() {
+        synchronized (parsecLock) {
+            if (parsecAlive && parsec != null) parsec.clientPauseAudio();
+        }
+    }
+
+    /** Drop SDK audio queued during headset sleep before rendering resumes. */
+    public int resumeAudioForLifecycle() {
+        synchronized (parsecLock) {
+            if (parsecAlive && parsec != null) return parsec.clientResumeAudio();
+            return 0;
+        }
+    }
+
     public void setTrackpadListener(TrackpadListener l) {
         this.trackpadListener = l;
     }

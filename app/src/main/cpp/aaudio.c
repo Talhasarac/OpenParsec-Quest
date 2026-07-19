@@ -1,5 +1,6 @@
 #include "aaudio.h"
 
+#include <stdbool.h>
 #include <stdlib.h>
 
 #include <aaudio/AAudio.h>
@@ -10,11 +11,56 @@ struct aaudio {
     AAudioStreamBuilder *builder;
     AAudioStream *stream;
     int32_t last_underruns;
+    bool paused;
 };
 
 static void aaudio_errorcallback(AAudioStream *stream, void *userData, aaudio_result_t error)
 {
     __android_log_print(ANDROID_LOG_INFO, "PARSEC", "aaudio error %d", error);
+}
+
+static bool aaudio_open_stream(struct aaudio *ctx)
+{
+    if (!ctx || !ctx->builder)
+        return false;
+
+    if (ctx->stream) {
+        AAudioStream_close(ctx->stream);
+        ctx->stream = NULL;
+    }
+
+    aaudio_result_t result = AAudioStreamBuilder_openStream(ctx->builder, &ctx->stream);
+    if (result != AAUDIO_OK) {
+        __android_log_print(ANDROID_LOG_ERROR, "PARSEC",
+            "failed to open aaudio stream: %s", AAudio_convertResultToText(result));
+        ctx->stream = NULL;
+        return false;
+    }
+
+    ctx->last_underruns = AAudioStream_getXRunCount(ctx->stream);
+    return true;
+}
+
+static bool aaudio_wait_for_state(
+    AAudioStream *stream, aaudio_stream_state_t wanted, int attempts)
+{
+    if (!stream)
+        return false;
+
+    aaudio_stream_state_t state = AAudioStream_getState(stream);
+    while (state != wanted && attempts-- > 0) {
+        if (state == AAUDIO_STREAM_STATE_CLOSED
+            || state == AAUDIO_STREAM_STATE_DISCONNECTED)
+            return false;
+
+        aaudio_stream_state_t next = state;
+        aaudio_result_t result =
+            AAudioStream_waitForStateChange(stream, state, &next, 25000000);
+        if (result != AAUDIO_OK && result != AAUDIO_ERROR_TIMEOUT)
+            return false;
+        state = next;
+    }
+    return state == wanted;
 }
 
 void aaudio_init(struct aaudio **ctx_out)
@@ -41,7 +87,7 @@ void aaudio_init(struct aaudio **ctx_out)
         AAudioStreamBuilder_setContentType(ctx->builder, AAUDIO_CONTENT_TYPE_MOVIE);
     }
 
-    AAudioStreamBuilder_openStream(ctx->builder, &ctx->stream);
+    aaudio_open_stream(ctx);
 }
 
 void aaudio_destroy(struct aaudio **ctx_out)
@@ -63,18 +109,76 @@ void aaudio_destroy(struct aaudio **ctx_out)
     *ctx_out = NULL;
 }
 
+void aaudio_pause(struct aaudio *ctx)
+{
+    if (!ctx)
+        return;
+
+    // Set this before touching the stream. If an SDK audio callback is already
+    // in flight, aaudio_play will discard it instead of restarting playback.
+    ctx->paused = true;
+    if (!ctx->stream)
+        return;
+
+    aaudio_stream_state_t state = AAudioStream_getState(ctx->stream);
+    if (state == AAUDIO_STREAM_STATE_STARTED
+        || state == AAUDIO_STREAM_STATE_STARTING) {
+        if (AAudioStream_requestPause(ctx->stream) == AAUDIO_OK)
+            aaudio_wait_for_state(ctx->stream, AAUDIO_STREAM_STATE_PAUSED, 4);
+    }
+
+    state = AAudioStream_getState(ctx->stream);
+    if (state == AAUDIO_STREAM_STATE_PAUSED
+        || state == AAUDIO_STREAM_STATE_PAUSING) {
+        if (state == AAUDIO_STREAM_STATE_PAUSING)
+            aaudio_wait_for_state(ctx->stream, AAUDIO_STREAM_STATE_PAUSED, 4);
+        if (AAudioStream_requestFlush(ctx->stream) == AAUDIO_OK)
+            aaudio_wait_for_state(ctx->stream, AAUDIO_STREAM_STATE_FLUSHED, 4);
+    }
+}
+
+void aaudio_resume(struct aaudio *ctx)
+{
+    if (!ctx)
+        return;
+
+    if (!ctx->stream
+        || AAudioStream_getState(ctx->stream) == AAUDIO_STREAM_STATE_DISCONNECTED
+        || AAudioStream_getState(ctx->stream) == AAUDIO_STREAM_STATE_CLOSED) {
+        if (!aaudio_open_stream(ctx))
+            return;
+    }
+
+    ctx->paused = false;
+    aaudio_result_t result = AAudioStream_requestStart(ctx->stream);
+    if (result != AAUDIO_OK) {
+        __android_log_print(ANDROID_LOG_WARN, "PARSEC",
+            "failed to restart aaudio stream: %s", AAudio_convertResultToText(result));
+    }
+}
+
 void aaudio_play(int16_t *pcm, uint32_t frames, void *opaque)
 {
     struct aaudio *ctx = (struct aaudio *) opaque;
+    if (!ctx || !ctx->stream || ctx->paused)
+        return;
+
+    aaudio_stream_state_t state = AAudioStream_getState(ctx->stream);
+    if (state == AAUDIO_STREAM_STATE_DISCONNECTED
+        || state == AAUDIO_STREAM_STATE_CLOSED) {
+        if (!aaudio_open_stream(ctx))
+            return;
+        state = AAudioStream_getState(ctx->stream);
+    }
+
+    if (state != AAUDIO_STREAM_STATE_STARTED
+        && state != AAUDIO_STREAM_STATE_STARTING) {
+        AAudioStream_requestStart(ctx->stream);
+    }
 
     AAudioStream_write(ctx->stream, pcm, frames, 40000000); // 40ms
 
     int32_t underruns = AAudioStream_getXRunCount(ctx->stream);
-    int32_t state = AAudioStream_getState(ctx->stream);
-
-    if (underruns > ctx->last_underruns || state != AAUDIO_STREAM_STATE_STARTED) {
-        AAudioStream_requestStop(ctx->stream);
-        AAudioStream_requestStart(ctx->stream);
+    if (underruns > ctx->last_underruns)
         ctx->last_underruns = underruns;
-    }
 }

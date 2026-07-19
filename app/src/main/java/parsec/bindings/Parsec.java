@@ -28,6 +28,10 @@ public class Parsec {
                                     int decoderSoftware,
                                     int resolutionX, int resolutionY, int refreshRate);
     public native void clientPollAudio();
+    public native void clientPauseAudio();
+    /** Discard audio accumulated while backgrounded, restart output, and
+     *  return the number of stale SDK packets removed. */
+    public native int clientResumeAudio();
     public native void clientDestroy();
     public native void clientSetDimensions(int x, int y);
     public native void clientGLRenderFrame();

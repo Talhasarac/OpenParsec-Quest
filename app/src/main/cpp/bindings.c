@@ -127,6 +127,43 @@ Java_parsec_bindings_Parsec_clientPollAudio(JNIEnv *env, jobject instance)
 }
 
 JNIEXPORT void JNICALL
+Java_parsec_bindings_Parsec_clientPauseAudio(JNIEnv *env, jobject instance)
+{
+    struct aaudio *aaudio = getPointer(env, instance, "aaudio");
+    aaudio_pause(aaudio);
+}
+
+static void discard_audio(int16_t *pcm, uint32_t frames, void *opaque)
+{
+    (void) pcm;
+    (void) frames;
+    (void) opaque;
+}
+
+JNIEXPORT jint JNICALL
+Java_parsec_bindings_Parsec_clientResumeAudio(JNIEnv *env, jobject instance)
+{
+    Parsec *parsec = getPointer(env, instance, "parsec");
+    struct aaudio *aaudio = getPointer(env, instance, "aaudio");
+    if (!parsec || !aaudio)
+        return 0;
+
+    // Keep AAudio paused while rapidly draining packets the SDK accumulated
+    // during headset sleep. Playing these packets is what caused sound to
+    // remain seconds behind video after putting the Quest back on.
+    aaudio_pause(aaudio);
+    int drained = 0;
+    const int max_drain_packets = 4096;
+    while (drained < max_drain_packets
+        && ParsecClientPollAudio(parsec, discard_audio, 0, NULL) == PARSEC_OK) {
+        drained++;
+    }
+
+    aaudio_resume(aaudio);
+    return (jint) drained;
+}
+
+JNIEXPORT void JNICALL
 Java_parsec_bindings_Parsec_clientDestroy(JNIEnv *env, jobject instance)
 {
     Parsec *parsec = getPointer(env, instance, "parsec");

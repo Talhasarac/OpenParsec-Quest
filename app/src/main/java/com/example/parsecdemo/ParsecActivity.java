@@ -1525,7 +1525,12 @@ public class ParsecActivity extends Activity {
     @Override
     protected void onPause() {
         cancelQuestCadHold();
-        if (surface != null) surface.onPause();
+        if (surface != null) {
+            // Stop the GL/audio polling thread first, then flush device audio.
+            // This ordering prevents a final poll from refilling the stream.
+            surface.onPause();
+            surface.pauseAudioForLifecycle();
+        }
         // Release any held physical-gamepad inputs so the host doesn't see a
         // stuck button while we're backgrounded.
         GamepadInputHandler.unplug(parsec);
@@ -1539,7 +1544,16 @@ public class ParsecActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        if (surface != null) surface.onResume();
+        if (surface != null) {
+            // Catch the SDK up to live audio before the render thread begins
+            // polling again; otherwise the buffered sleep audio plays late.
+            int staleAudioPackets = surface.resumeAudioForLifecycle();
+            if (staleAudioPackets > 0) {
+                Log.i("ParsecActivity", "Discarded " + staleAudioPackets
+                        + " stale audio packets after resume");
+            }
+            surface.onResume();
+        }
         applyImmersive();
         // Resume the watchdog. If we came back from background and the session
         // died, the first health tick (5s after resume) will catch it and
