@@ -20,6 +20,7 @@ The upstream Android APK may already run on a Quest when sideloaded.
   hold B = Ctrl+Alt+Delete
 - adds an opt-in 3–50 Mbps bandwidth limit using Parsec's host video-config
   messages while preserving the host's other current video settings
+- adds the official Android client's Constant FPS host setting
 - disables updates to the differently packaged upstream phone build
 - includes small CMake, native audio-struct, and Android resource fixes needed
   by this build
@@ -62,13 +63,13 @@ Requirements:
 The APK is written to:
 
 ```text
-app/build/outputs/apk/release/openparsec-quest2-0.2.0-quest-release.apk
+app/build/outputs/apk/release/openparsec-quest2-0.3.0-quest-release.apk
 ```
 
 With developer mode and ADB available, install it using:
 
 ```bash
-adb install -r app/build/outputs/apk/release/openparsec-quest2-0.2.0-quest-release.apk
+adb install -r app/build/outputs/apk/release/openparsec-quest2-0.3.0-quest-release.apk
 ```
 
 ## Credits

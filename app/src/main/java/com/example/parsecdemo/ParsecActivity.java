@@ -603,7 +603,7 @@ public class ParsecActivity extends Activity {
             String videoConfig = parsec.clientPollVideoConfig();
             if (videoConfig != null && awaitingHostVideoConfig) {
                 awaitingHostVideoConfig = false;
-                applyBandwidthToHostVideoConfig(videoConfig);
+                applySettingsToHostVideoConfig(videoConfig);
             }
         } catch (Throwable t) {
             Log.w("ParsecVideoConfig", "Could not process host video config", t);
@@ -1353,11 +1353,15 @@ public class ParsecActivity extends Activity {
      * up to three output records; OpenParsec controls the active first output.
      *
      * A bandwidth value of zero is deliberately a no-op so merely installing
-     * this client never overwrites the host's existing encoder cap.
+     * this client never overwrites the host's existing encoder cap. The
+     * official client's Constant FPS setting maps to fullFPS.
      */
     private void sendFallbackHostVideoConfig() {
         if (parsec == null || settings == null) return;
         int bandwidth = settings.bandwidthMbps();
+        // Without the host's current config there is no safe bitrate value to
+        // put in a complete fallback record. Constant FPS still applies on
+        // current hosts through the normal GET/merge path.
         if (bandwidth <= 0) return;
 
         try {
@@ -1365,11 +1369,12 @@ public class ParsecActivity extends Activity {
             video.put(hostVideoEntry(
                     settings.configResolutionX(),
                     settings.configResolutionY(),
-                    bandwidth));
+                    bandwidth,
+                    settings.constantFps()));
             // Match the schema used by the official client. Inactive outputs
             // retain neutral defaults and do not select a physical display.
-            video.put(hostVideoEntry(0, 0, 50));
-            video.put(hostVideoEntry(0, 0, 50));
+            video.put(hostVideoEntry(0, 0, 50, false));
+            video.put(hostVideoEntry(0, 0, 50, false));
 
             JSONObject config = new JSONObject();
             config.put("virtualMicrophone", 0);
@@ -1382,7 +1387,8 @@ public class ParsecActivity extends Activity {
                 Log.w("ParsecVideoConfig", "Host video config failed: " + status);
             } else {
                 Log.i("ParsecVideoConfig", "Requested bandwidth limit "
-                        + bandwidth + " Mbps");
+                        + bandwidth + " Mbps; constant FPS "
+                        + settings.constantFps());
             }
         } catch (Throwable t) {
             Log.w("ParsecVideoConfig", "Could not build/send host video config", t);
@@ -1391,12 +1397,11 @@ public class ParsecActivity extends Activity {
 
     /**
      * Preserve the host's current display and encoder fields, changing only
-     * the first stream's bandwidth cap before returning message 11.
+     * the requested owner controls before returning message 11.
      */
-    private void applyBandwidthToHostVideoConfig(String rawConfig) {
+    private void applySettingsToHostVideoConfig(String rawConfig) {
         if (parsec == null || settings == null) return;
         int bandwidth = settings.bandwidthMbps();
-        if (bandwidth <= 0) return;
 
         try {
             JSONObject config = new JSONObject(rawConfig);
@@ -1407,14 +1412,17 @@ public class ParsecActivity extends Activity {
                 sendFallbackHostVideoConfig();
                 return;
             }
-            active.put("encoderMaxBitrate", bandwidth);
+            if (bandwidth > 0)
+                active.put("encoderMaxBitrate", bandwidth);
+            active.put("fullFPS", settings.constantFps());
             int status = parsec.clientSendUserData(
                     Parsec.VIDEO_CONFIG_MSG_ID, config.toString());
             if (status != parsec.PARSEC_OK) {
                 Log.w("ParsecVideoConfig", "Merged video config failed: " + status);
             } else {
-                Log.i("ParsecVideoConfig", "Applied bandwidth limit "
-                        + bandwidth + " Mbps");
+                Log.i("ParsecVideoConfig", "Applied owner video settings: "
+                        + (bandwidth > 0 ? bandwidth + " Mbps; " : "host bitrate; ")
+                        + "constant FPS " + settings.constantFps());
             }
         } catch (Throwable t) {
             Log.w("ParsecVideoConfig", "Invalid host video config; using fallback", t);
@@ -1422,9 +1430,9 @@ public class ParsecActivity extends Activity {
         }
     }
 
-    /** Ask for the current config before applying the selected bandwidth. */
+    /** Ask for the current config before applying owner video settings. */
     private void requestHostVideoConfig() {
-        if (parsec == null || settings == null || settings.bandwidthMbps() <= 0) return;
+        if (parsec == null || settings == null) return;
 
         awaitingHostVideoConfig = true;
         final int generation = ++hostVideoConfigRequestGeneration;
@@ -1451,13 +1459,14 @@ public class ParsecActivity extends Activity {
         }, 1000L);
     }
 
-    private static JSONObject hostVideoEntry(int width, int height, int bandwidth)
+    private static JSONObject hostVideoEntry(
+            int width, int height, int bandwidth, boolean constantFps)
             throws org.json.JSONException {
         JSONObject entry = new JSONObject();
         entry.put("encoderFPS", 0);
         entry.put("resolutionX", width);
         entry.put("resolutionY", height);
-        entry.put("fullFPS", false);
+        entry.put("fullFPS", constantFps);
         entry.put("hostOS", 0);
         entry.put("output", "none");
         entry.put("encoderMaxBitrate", bandwidth);
@@ -1466,7 +1475,7 @@ public class ParsecActivity extends Activity {
 
     /** The host-side control channel becomes ready just after clientConnect. */
     private void scheduleHostVideoConfig() {
-        if (settings == null || settings.bandwidthMbps() <= 0) return;
+        if (settings == null) return;
         new android.os.Handler(getMainLooper()).postDelayed(() -> {
             if (!isFinishing() && !isDestroyed() && !isReconnecting) {
                 requestHostVideoConfig();

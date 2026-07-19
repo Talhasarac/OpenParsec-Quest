@@ -121,12 +121,16 @@ public final class SettingsPanel {
                 Settings.BANDWIDTH_VALUES,
                 s.bandwidthMbps(), s::bandwidthMbps));
         addDivider(a, graphics);
+        graphics.addView(rowToggle(a, "Constant FPS",
+                s.constantFps(), s::constantFps));
+        addDivider(a, graphics);
         // Honest note: resolution/refresh only apply when you're the owner of
         // the host PC connecting first (i.e. streaming your own machine).
         graphics.addView(rowNote(a,
-                "Resolution, refresh, and bandwidth changes require the host "
-                + "to accept owner video settings. Host Default leaves its "
-                + "bandwidth unchanged."));
+                "Resolution, refresh, bandwidth, and Constant FPS require the "
+                + "host to accept owner video settings. Constant FPS keeps "
+                + "encoding active on static screens and may use more data. "
+                + "Host Default leaves bandwidth unchanged."));
         addDivider(a, graphics);
         graphics.addView(rowToggle(a, "Force Software Decoder",
                 s.decoderCompatibility(), s::decoderCompatibility));

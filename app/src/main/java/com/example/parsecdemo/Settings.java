@@ -89,6 +89,14 @@ public final class Settings {
         }
     }
 
+    /** Ask the host to encode at the requested FPS even when the screen is
+     *  mostly static. This is the official Android client's "Constant FPS"
+     *  setting and maps to message-11's fullFPS field. */
+    public boolean constantFps() { return sp.getBoolean("constantFps", true); }
+    public void constantFps(boolean v) {
+        sp.edit().putBoolean("constantFps", v).apply();
+    }
+
     /** "Decoder Compatibility" = force software decoding (ParsecClientConfig.decoderSoftware).
      *  For devices whose hardware MediaCodec path is flaky. */
     public boolean decoderCompatibility() { return sp.getBoolean("decoderCompat", false); }
