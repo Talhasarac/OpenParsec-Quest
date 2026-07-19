@@ -134,8 +134,20 @@ Java_parsec_bindings_Parsec_clientPollAudio(JNIEnv *env, jobject instance)
 {
     Parsec *parsec = getPointer(env, instance, "parsec");
     struct aaudio *aaudio = getPointer(env, instance, "aaudio");
+    if (!parsec || !aaudio)
+        return;
 
-    ParsecClientPollAudio(parsec, aaudio_play, 0, aaudio);
+    // PollAudio returns one queued packet at a time. Calling it only once per
+    // video frame leaves the SDK queue permanently behind whenever audio
+    // packets arrive faster than frames render. Drain the current backlog;
+    // aaudio_play uses a bounded, non-blocking device buffer and drops excess
+    // stale packets so playback catches the live edge instead of accumulating
+    // seconds of stable delay.
+    const int max_packets_per_frame = 128;
+    for (int packet = 0; packet < max_packets_per_frame; packet++) {
+        if (ParsecClientPollAudio(parsec, aaudio_play, 0, aaudio) != PARSEC_OK)
+            break;
+    }
 }
 
 JNIEXPORT void JNICALL

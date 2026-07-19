@@ -7,6 +7,9 @@
 #include <android/api-level.h>
 #include <android/log.h>
 
+#define AAUDIO_BUFFER_CAPACITY_FRAMES 1920 // 40 ms at 48 kHz
+#define AAUDIO_TARGET_BUFFER_FRAMES 960    // 20 ms at 48 kHz
+
 struct aaudio {
     AAudioStreamBuilder *builder;
     AAudioStream *stream;
@@ -35,6 +38,26 @@ static bool aaudio_open_stream(struct aaudio *ctx)
             "failed to open aaudio stream: %s", AAudio_convertResultToText(result));
         ctx->stream = NULL;
         return false;
+    }
+
+    // Keep the device-side queue short. A larger buffer makes playback more
+    // tolerant of stalls, but in a remote-desktop client it also turns every
+    // render hiccup into persistent audio latency.
+    int32_t target_frames = AAUDIO_TARGET_BUFFER_FRAMES;
+    int32_t frames_per_burst = AAudioStream_getFramesPerBurst(ctx->stream);
+    if (frames_per_burst > 0 && frames_per_burst * 2 > target_frames)
+        target_frames = frames_per_burst * 2;
+
+    int32_t buffer_frames =
+        AAudioStream_setBufferSizeInFrames(ctx->stream, target_frames);
+    if (buffer_frames < 0) {
+        __android_log_print(ANDROID_LOG_WARN, "PARSEC",
+            "failed to set aaudio buffer size: %s",
+            AAudio_convertResultToText(buffer_frames));
+    } else {
+        __android_log_print(ANDROID_LOG_INFO, "PARSEC",
+            "aaudio buffer: %d frames (%d frames per burst)",
+            buffer_frames, frames_per_burst);
     }
 
     ctx->last_underruns = AAudioStream_getXRunCount(ctx->stream);
@@ -73,6 +96,8 @@ void aaudio_init(struct aaudio **ctx_out)
     AAudioStreamBuilder_setChannelCount(ctx->builder, 2);
     AAudioStreamBuilder_setFormat(ctx->builder, AAUDIO_FORMAT_PCM_I16);
     AAudioStreamBuilder_setPerformanceMode(ctx->builder, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
+    AAudioStreamBuilder_setBufferCapacityInFrames(
+        ctx->builder, AAUDIO_BUFFER_CAPACITY_FRAMES);
     AAudioStreamBuilder_setErrorCallback(ctx->builder, aaudio_errorcallback, NULL);
 
     // Route remote-desktop audio as full-bandwidth media playback, not as a
@@ -176,7 +201,14 @@ void aaudio_play(int16_t *pcm, uint32_t frames, void *opaque)
         AAudioStream_requestStart(ctx->stream);
     }
 
-    AAudioStream_write(ctx->stream, pcm, frames, 40000000); // 40ms
+    // Never block the GL/render thread waiting for audio space. The caller
+    // drains all pending SDK packets, so a full device buffer means this
+    // packet is already too old and should be dropped to preserve low latency.
+    aaudio_result_t written = AAudioStream_write(ctx->stream, pcm, frames, 0);
+    if (written < 0) {
+        __android_log_print(ANDROID_LOG_WARN, "PARSEC",
+            "aaudio write failed: %s", AAudio_convertResultToText(written));
+    }
 
     int32_t underruns = AAudioStream_getXRunCount(ctx->stream);
     if (underruns > ctx->last_underruns)
