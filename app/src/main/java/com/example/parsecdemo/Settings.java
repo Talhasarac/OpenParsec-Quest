@@ -25,6 +25,15 @@ public final class Settings {
     public static final String[] RESOLUTION_LABELS = {
             "Match Client", "1280×720", "1920×1080", "2560×1440", "3840×2160" };
 
+    /** Values exposed by the official Parsec client's Bandwidth Limit menu.
+     *  Zero is our opt-in-safe "Host Default" sentinel and is never sent. */
+    public static final int[] BANDWIDTH_VALUES = {
+            0, 3, 5, 7, 10, 15, 20, 25, 30, 35, 40, 45, 50 };
+    public static final String[] BANDWIDTH_LABELS = {
+            "Host Default", "3 Mbps", "5 Mbps", "7 Mbps", "10 Mbps",
+            "15 Mbps", "20 Mbps", "25 Mbps", "30 Mbps", "35 Mbps",
+            "40 Mbps", "45 Mbps", "50 Mbps" };
+
     private final SharedPreferences sp;
     private final boolean quest;
 
@@ -62,6 +71,23 @@ public final class Settings {
 
     public int preferredFps() { return sp.getInt("preferredFps", 60); }
     public void preferredFps(int v) { sp.edit().putInt("preferredFps", v).apply(); }
+
+    /** Requested Parsec host encoder cap in Mbps, or 0 to leave it unchanged. */
+    public int bandwidthMbps() {
+        int value = sp.getInt("bandwidthMbps", 0);
+        for (int allowed : BANDWIDTH_VALUES) {
+            if (allowed == value) return value;
+        }
+        return 0;
+    }
+    public void bandwidthMbps(int v) {
+        for (int allowed : BANDWIDTH_VALUES) {
+            if (allowed == v) {
+                sp.edit().putInt("bandwidthMbps", v).apply();
+                return;
+            }
+        }
+    }
 
     /** "Decoder Compatibility" = force software decoding (ParsecClientConfig.decoderSoftware).
      *  For devices whose hardware MediaCodec path is flaky. */

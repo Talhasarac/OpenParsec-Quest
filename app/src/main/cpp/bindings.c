@@ -21,13 +21,12 @@ static volatile int g_rumbleSmall = 0;      // last small-motor rumble value (0-
 static volatile int g_rumbleNew = 0;        // 1 if an unconsumed rumble event is pending
 static pthread_mutex_t g_clipLock = PTHREAD_MUTEX_INITIALIZER;
 static char *g_pendingClipboard = NULL;     // owned malloc'd copy of latest host user-data text
+static char *g_pendingVideoConfig = NULL;   // owned copy of user-data message 11
 
-/* User-data message id used for clipboard interop. The official Parsec
- * desktop host's reserved clipboard id isn't in this public header, so the
- * SEND path is best-effort/experimental; the RECEIVE path treats ANY host
- * user-data as clipboard text (a desktop host's only user-data to a guest
- * is the clipboard). */
+/* User-data ids not exposed by this legacy public SDK header. Clipboard id 1
+ * remains best-effort; video-config ids 9/11 match current official clients. */
 #define CLIPBOARD_MSG_ID 1
+#define VIDEO_CONFIG_MSG_ID 11
 
 static void logCallback(ParsecLogLevel level, char *msg, void *opaque)
 {
@@ -76,6 +75,13 @@ Java_parsec_bindings_Parsec_destroy(JNIEnv *env, jobject instance)
     Parsec *parsec = getPointer(env, instance, "parsec");
     ParsecDestroy(parsec);
 
+    pthread_mutex_lock(&g_clipLock);
+    free(g_pendingClipboard);
+    g_pendingClipboard = NULL;
+    free(g_pendingVideoConfig);
+    g_pendingVideoConfig = NULL;
+    pthread_mutex_unlock(&g_clipLock);
+
     setPointer(env, instance, "parsec", NULL);
     setPointer(env, instance, "aaudio", NULL);
 }
@@ -108,6 +114,12 @@ Java_parsec_bindings_Parsec_clientConnect(JNIEnv *env, jobject instance, jstring
     // Fresh session — clear any stale event state.
     g_cursorRelative = 0;
     g_rumbleNew = 0;
+    pthread_mutex_lock(&g_clipLock);
+    free(g_pendingClipboard);
+    g_pendingClipboard = NULL;
+    free(g_pendingVideoConfig);
+    g_pendingVideoConfig = NULL;
+    pthread_mutex_unlock(&g_clipLock);
 
     ParsecStatus e = ParsecClientConnect(parsec, &cfg, (char *) cSessionID, (char *) cPeerID);
 
@@ -386,12 +398,19 @@ Java_parsec_bindings_Parsec_clientPollEvents(JNIEnv *env, jobject instance)
             case CLIENT_EVENT_USER_DATA: {
                 void *buf = ParsecGetBuffer(parsec, evt.userData.key);
                 if (buf) {
-                    char *copy = strdup((const char *) buf);
+                    char *copy = (evt.userData.id == CLIPBOARD_MSG_ID
+                            || evt.userData.id == VIDEO_CONFIG_MSG_ID)
+                        ? strdup((const char *) buf) : NULL;
                     ParsecFree(buf);
                     if (copy) {
                         pthread_mutex_lock(&g_clipLock);
-                        free(g_pendingClipboard);
-                        g_pendingClipboard = copy;
+                        if (evt.userData.id == CLIPBOARD_MSG_ID) {
+                            free(g_pendingClipboard);
+                            g_pendingClipboard = copy;
+                        } else {
+                            free(g_pendingVideoConfig);
+                            g_pendingVideoConfig = copy;
+                        }
                         pthread_mutex_unlock(&g_clipLock);
                     }
                 }
@@ -427,6 +446,21 @@ Java_parsec_bindings_Parsec_clientPollClipboard(JNIEnv *env, jobject instance)
     pthread_mutex_lock(&g_clipLock);
     s = g_pendingClipboard;
     g_pendingClipboard = NULL;
+    pthread_mutex_unlock(&g_clipLock);
+    if (!s) return NULL;
+    jstring js = (*env)->NewStringUTF(env, s);
+    free(s);
+    return js;
+}
+
+/** Returns the newest host video-config JSON (message 11), or null. */
+JNIEXPORT jstring JNICALL
+Java_parsec_bindings_Parsec_clientPollVideoConfig(JNIEnv *env, jobject instance)
+{
+    char *s = NULL;
+    pthread_mutex_lock(&g_clipLock);
+    s = g_pendingVideoConfig;
+    g_pendingVideoConfig = NULL;
     pthread_mutex_unlock(&g_clipLock);
     if (!s) return NULL;
     jstring js = (*env)->NewStringUTF(env, s);

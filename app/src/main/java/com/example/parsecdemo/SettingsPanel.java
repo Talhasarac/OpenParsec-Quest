@@ -116,11 +116,17 @@ public final class SettingsPanel {
                 new int[]{0, 120, 60, 30},
                 s.preferredFps(), s::preferredFps));
         addDivider(a, graphics);
+        graphics.addView(rowPickerInt(a, "Bandwidth Limit",
+                Settings.BANDWIDTH_LABELS,
+                Settings.BANDWIDTH_VALUES,
+                s.bandwidthMbps(), s::bandwidthMbps));
+        addDivider(a, graphics);
         // Honest note: resolution/refresh only apply when you're the owner of
         // the host PC connecting first (i.e. streaming your own machine).
         graphics.addView(rowNote(a,
-                "Resolution & refresh only apply when streaming your own PC "
-                + "(you're the host owner). Ignored for shared/guest sessions."));
+                "Resolution, refresh, and bandwidth changes require the host "
+                + "to accept owner video settings. Host Default leaves its "
+                + "bandwidth unchanged."));
         addDivider(a, graphics);
         graphics.addView(rowToggle(a, "Force Software Decoder",
                 s.decoderCompatibility(), s::decoderCompatibility));

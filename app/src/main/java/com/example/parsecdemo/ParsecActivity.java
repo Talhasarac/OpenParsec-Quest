@@ -36,6 +36,9 @@ import android.widget.Toast;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
 import parsec.bindings.Parsec;
 
 public class ParsecActivity extends Activity {
@@ -110,6 +113,10 @@ public class ParsecActivity extends Activity {
     private long lastFpsSampleMs = 0L;
     private int currentFps = 0;
     private long ioTickCount = 0L;
+    /** True between message 9 (get video config) and applying message 11. */
+    private boolean awaitingHostVideoConfig = false;
+    /** Invalidates delayed fallbacks from older configuration requests. */
+    private int hostVideoConfigRequestGeneration = 0;
     /** Tracks the last relative-mode value pushed to the surface so we only
      *  toggle the cursor view / mode on an actual change. */
     private boolean lastRelativeMode = false;
@@ -244,6 +251,7 @@ public class ParsecActivity extends Activity {
             }
             startHealthWatchdog();
             startIoPump();
+            scheduleHostVideoConfig();
         } else {
             statusView.setText("clientConnect failed (code " + e + ")");
             Toast.makeText(this, "Connect failed: " + e, Toast.LENGTH_LONG).show();
@@ -590,6 +598,17 @@ public class ParsecActivity extends Activity {
             }
         } catch (Throwable ignored) {}
 
+        // --- Host video configuration response (message 11) ---
+        try {
+            String videoConfig = parsec.clientPollVideoConfig();
+            if (videoConfig != null && awaitingHostVideoConfig) {
+                awaitingHostVideoConfig = false;
+                applyBandwidthToHostVideoConfig(videoConfig);
+            }
+        } catch (Throwable t) {
+            Log.w("ParsecVideoConfig", "Could not process host video config", t);
+        }
+
         // --- Stats HUD (refresh ~2x/sec) ---
         if (statsView != null && statsView.getVisibility() == View.VISIBLE
                 && (ioTickCount % 5 == 0)) {
@@ -775,6 +794,7 @@ public class ParsecActivity extends Activity {
         }
         startHealthWatchdog();
         startIoPump();
+        scheduleHostVideoConfig();
     }
 
     /** Tear down the current Parsec session and reconnect using the cached
@@ -859,6 +879,7 @@ public class ParsecActivity extends Activity {
                 statusView.setVisibility(View.GONE);
                 scheduleNextHealthCheck();
                 startIoPump();
+                scheduleHostVideoConfig();
             });
         }, "ParsecReconnect").start();
     }
@@ -1326,6 +1347,133 @@ public class ParsecActivity extends Activity {
                 settings.configRefreshRate());
     }
 
+    /**
+     * Apply the official Parsec host-video configuration message used by the
+     * current Android/iOS clients. Message type 11 accepts a JSON object with
+     * up to three output records; OpenParsec controls the active first output.
+     *
+     * A bandwidth value of zero is deliberately a no-op so merely installing
+     * this client never overwrites the host's existing encoder cap.
+     */
+    private void sendFallbackHostVideoConfig() {
+        if (parsec == null || settings == null) return;
+        int bandwidth = settings.bandwidthMbps();
+        if (bandwidth <= 0) return;
+
+        try {
+            JSONArray video = new JSONArray();
+            video.put(hostVideoEntry(
+                    settings.configResolutionX(),
+                    settings.configResolutionY(),
+                    bandwidth));
+            // Match the schema used by the official client. Inactive outputs
+            // retain neutral defaults and do not select a physical display.
+            video.put(hostVideoEntry(0, 0, 50));
+            video.put(hostVideoEntry(0, 0, 50));
+
+            JSONObject config = new JSONObject();
+            config.put("virtualMicrophone", 0);
+            config.put("virtualTablet", 0);
+            config.put("video", video);
+
+            int status = parsec.clientSendUserData(
+                    Parsec.VIDEO_CONFIG_MSG_ID, config.toString());
+            if (status != parsec.PARSEC_OK) {
+                Log.w("ParsecVideoConfig", "Host video config failed: " + status);
+            } else {
+                Log.i("ParsecVideoConfig", "Requested bandwidth limit "
+                        + bandwidth + " Mbps");
+            }
+        } catch (Throwable t) {
+            Log.w("ParsecVideoConfig", "Could not build/send host video config", t);
+        }
+    }
+
+    /**
+     * Preserve the host's current display and encoder fields, changing only
+     * the first stream's bandwidth cap before returning message 11.
+     */
+    private void applyBandwidthToHostVideoConfig(String rawConfig) {
+        if (parsec == null || settings == null) return;
+        int bandwidth = settings.bandwidthMbps();
+        if (bandwidth <= 0) return;
+
+        try {
+            JSONObject config = new JSONObject(rawConfig);
+            JSONArray video = config.optJSONArray("video");
+            JSONObject active = video != null && video.length() > 0
+                    ? video.optJSONObject(0) : null;
+            if (active == null) {
+                sendFallbackHostVideoConfig();
+                return;
+            }
+            active.put("encoderMaxBitrate", bandwidth);
+            int status = parsec.clientSendUserData(
+                    Parsec.VIDEO_CONFIG_MSG_ID, config.toString());
+            if (status != parsec.PARSEC_OK) {
+                Log.w("ParsecVideoConfig", "Merged video config failed: " + status);
+            } else {
+                Log.i("ParsecVideoConfig", "Applied bandwidth limit "
+                        + bandwidth + " Mbps");
+            }
+        } catch (Throwable t) {
+            Log.w("ParsecVideoConfig", "Invalid host video config; using fallback", t);
+            sendFallbackHostVideoConfig();
+        }
+    }
+
+    /** Ask for the current config before applying the selected bandwidth. */
+    private void requestHostVideoConfig() {
+        if (parsec == null || settings == null || settings.bandwidthMbps() <= 0) return;
+
+        awaitingHostVideoConfig = true;
+        final int generation = ++hostVideoConfigRequestGeneration;
+        int status;
+        try {
+            status = parsec.clientSendUserData(Parsec.GET_VIDEO_CONFIG_MSG_ID, "");
+        } catch (Throwable t) {
+            status = -1;
+        }
+        if (status != parsec.PARSEC_OK) {
+            awaitingHostVideoConfig = false;
+            sendFallbackHostVideoConfig();
+            return;
+        }
+
+        // Older hosts may accept SET but never answer GET. Do not leave the
+        // user's selection inert in that case.
+        new android.os.Handler(getMainLooper()).postDelayed(() -> {
+            if (generation == hostVideoConfigRequestGeneration
+                    && awaitingHostVideoConfig && !isFinishing() && !isDestroyed()) {
+                awaitingHostVideoConfig = false;
+                sendFallbackHostVideoConfig();
+            }
+        }, 1000L);
+    }
+
+    private static JSONObject hostVideoEntry(int width, int height, int bandwidth)
+            throws org.json.JSONException {
+        JSONObject entry = new JSONObject();
+        entry.put("encoderFPS", 0);
+        entry.put("resolutionX", width);
+        entry.put("resolutionY", height);
+        entry.put("fullFPS", false);
+        entry.put("hostOS", 0);
+        entry.put("output", "none");
+        entry.put("encoderMaxBitrate", bandwidth);
+        return entry;
+    }
+
+    /** The host-side control channel becomes ready just after clientConnect. */
+    private void scheduleHostVideoConfig() {
+        if (settings == null || settings.bandwidthMbps() <= 0) return;
+        new android.os.Handler(getMainLooper()).postDelayed(() -> {
+            if (!isFinishing() && !isDestroyed() && !isReconnecting) {
+                requestHostVideoConfig();
+            }
+        }, 750L);
+    }
+
     private void applySettingsToSurface() {
         if (surface == null) return;
         surface.setTrackpadMode(settings.isTouchpadMode());
@@ -1361,6 +1509,7 @@ public class ParsecActivity extends Activity {
             settingsOverlay = null;
             applySettingsToSurface();
             syncStatsHud(); // user may have toggled Show Performance Stats
+            requestHostVideoConfig();
         }
     }
 

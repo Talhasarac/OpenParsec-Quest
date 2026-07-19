@@ -18,6 +18,8 @@ The upstream Android APK may already run on a Quest when sideloaded.
 - adds session-menu actions for Alt+Tab, Ctrl+C, Ctrl+V, and Ctrl+Alt+Delete
 - maps recognized Touch buttons to A = Alt+Tab, X = Copy, Y = Paste, and
   hold B = Ctrl+Alt+Delete
+- adds an opt-in 3–50 Mbps bandwidth limit using Parsec's host video-config
+  messages while preserving the host's other current video settings
 - disables updates to the differently packaged upstream phone build
 - includes small CMake, native audio-struct, and Android resource fixes needed
   by this build

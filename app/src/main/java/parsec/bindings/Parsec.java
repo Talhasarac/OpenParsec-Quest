@@ -66,11 +66,17 @@ public class Parsec {
     public native int clientPollRumble();
     /** Latest host user-data (clipboard) text, or null. Clears on read. */
     public native String clientPollClipboard();
-    /** Send a user-defined message to the host (used for clipboard, id=1). */
+    /** Latest host video configuration JSON (message 11), or null. */
+    public native String clientPollVideoConfig();
+    /** Send a user-defined message to the host. */
     public native int clientSendUserData(int id, String text);
 
     /** User-data message id used for clipboard interop (best-effort). */
     public static final int CLIPBOARD_MSG_ID = 1;
+    /** Request the host's current video configuration. */
+    public static final int GET_VIDEO_CONFIG_MSG_ID = 9;
+    /** Official Parsec host video-configuration user-data message. */
+    public static final int VIDEO_CONFIG_MSG_ID = 11;
 
     // ParsecGamepadButton
     public static final int GAMEPAD_BUTTON_A          = 0;
