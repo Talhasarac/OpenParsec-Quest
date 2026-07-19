@@ -15,7 +15,8 @@ The upstream Android APK may already run on a Quest when sideloaded.
 - configures the app as a resizable landscape 2D panel
 - defaults to direct pointer input and 1080p/60 on Quest hardware
 - displays basic Quest controller guidance
-- adds session-menu actions for Alt+Tab, Ctrl+C, Ctrl+V, and Ctrl+Alt+Delete
+- adds session-menu actions for Alt+Tab, Win+D, Ctrl+C, Ctrl+V, and
+  Ctrl+Alt+Delete
 - maps recognized Touch buttons to A = Alt+Tab, X = Copy, Y = Paste, and
   hold B = Ctrl+Alt+Delete
 - maps the right Touch thumbstick to mouse-wheel scrolling and its press to
@@ -73,13 +74,13 @@ Requirements:
 The APK is written to:
 
 ```text
-app/build/outputs/apk/release/openparsec-quest2-0.4.5-quest-release.apk
+app/build/outputs/apk/release/openparsec-quest2-0.4.6-quest-release.apk
 ```
 
 With developer mode and ADB available, install it using:
 
 ```bash
-adb install -r app/build/outputs/apk/release/openparsec-quest2-0.4.5-quest-release.apk
+adb install -r app/build/outputs/apk/release/openparsec-quest2-0.4.6-quest-release.apk
 ```
 
 ## Credits

@@ -9,6 +9,7 @@ final class KeyMap {
     // Parsec keycodes (from parsec.h ParsecKeycode enum)
     static final int KEY_A = 4;
     static final int KEY_C = KEY_A + 2;
+    static final int KEY_D = KEY_A + 3;
     static final int KEY_V = KEY_A + 21;
     static final int KEY_1 = 30;
     static final int KEY_ENTER = 40;

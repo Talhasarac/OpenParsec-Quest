@@ -334,6 +334,7 @@ public class ParsecActivity extends Activity {
                     rebuildSessionFab();
                 }));
         items.add(new SessionFab.Item("Alt+Tab", this::sendAltTab));
+        items.add(new SessionFab.Item("Show Desktop (Win+D)", this::sendShowDesktop));
         items.add(new SessionFab.Item("Copy (Ctrl+C)", this::sendCopyShortcut));
         items.add(new SessionFab.Item("Paste (Ctrl+V)", this::sendPasteShortcut));
         // Ctrl+Alt+Del stays in the menu as a reliable fallback even when
@@ -1309,6 +1310,10 @@ public class ParsecActivity extends Activity {
         sendChord(PK_LALT, KeyMap.KEY_TAB);
     }
 
+    private void sendShowDesktop() {
+        sendChord(PK_LGUI, KeyMap.KEY_D);
+    }
+
     private void sendCopyShortcut() {
         sendChord(PK_LCTRL, KeyMap.KEY_C);
     }
@@ -1326,7 +1331,7 @@ public class ParsecActivity extends Activity {
 
     /**
      * Press every key in order and always release all of them in reverse.
-     * Releasing in a finally block protects the host from a stuck Ctrl/Alt if
+     * Releasing in a finally block protects the host from a stuck modifier if
      * JNI throws, the connection drops, or a shortcut is interrupted midway.
      */
     private void sendChord(int... parsecKeys) {
