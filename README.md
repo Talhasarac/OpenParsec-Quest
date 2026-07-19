@@ -20,6 +20,10 @@ The upstream Android APK may already run on a Quest when sideloaded.
   hold B = Ctrl+Alt+Delete
 - prevents accidental movement of the keyboard and settings buttons: tap to
   open, or hold for one second before dragging
+- keeps rendering and absolute input on the same measured GL viewport across
+  resolution changes, keyboard resizing, Quest sleep, and reconnects
+- handles both Android mouse-button event styles used by Quest pointers and
+  clears stale held-button state when the panel is interrupted
 - adds an opt-in 3–50 Mbps bandwidth limit using Parsec's host video-config
   messages while preserving the host's other current video settings
 - adds the official Android client's Constant FPS host setting
@@ -67,13 +71,13 @@ Requirements:
 The APK is written to:
 
 ```text
-app/build/outputs/apk/release/openparsec-quest2-0.4.3-quest-release.apk
+app/build/outputs/apk/release/openparsec-quest2-0.4.4-quest-release.apk
 ```
 
 With developer mode and ADB available, install it using:
 
 ```bash
-adb install -r app/build/outputs/apk/release/openparsec-quest2-0.4.3-quest-release.apk
+adb install -r app/build/outputs/apk/release/openparsec-quest2-0.4.4-quest-release.apk
 ```
 
 ## Credits

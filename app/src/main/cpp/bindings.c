@@ -132,8 +132,8 @@ Java_parsec_bindings_Parsec_clientConnect(JNIEnv *env, jobject instance, jstring
 }
 
 JNIEXPORT jint JNICALL
-Java_parsec_bindings_Parsec_clientSetDecoder(JNIEnv *env, jobject instance,
-    jint decoderSoftware, jint decoderH265)
+Java_parsec_bindings_Parsec_clientSetConfig(JNIEnv *env, jobject instance,
+    jint decoderSoftware, jint decoderH265, jint resolutionX, jint resolutionY)
 {
     Parsec *parsec = getPointer(env, instance, "parsec");
     if (!parsec)
@@ -142,6 +142,8 @@ Java_parsec_bindings_Parsec_clientSetDecoder(JNIEnv *env, jobject instance,
     ParsecClientConfig cfg = {0};
     for (uint8_t stream = 0; stream < NUM_VSTREAMS; stream++) {
         cfg.video[stream].decoderIndex = decoderSoftware ? 0 : 1;
+        cfg.video[stream].resolutionX = resolutionX;
+        cfg.video[stream].resolutionY = resolutionY;
         cfg.video[stream].decoderCompatibility = false;
         cfg.video[stream].decoderH265 = decoderH265 ? true : false;
         cfg.video[stream].decoder444 = false;
@@ -220,12 +222,15 @@ Java_parsec_bindings_Parsec_clientDestroy(JNIEnv *env, jobject instance)
     ParsecClientDisconnect(parsec);
 }
 
-JNIEXPORT void JNICALL
+JNIEXPORT jint JNICALL
 Java_parsec_bindings_Parsec_clientSetDimensions(JNIEnv *env, jobject instance,
     jint x, jint y)
 {
     Parsec *parsec = getPointer(env, instance, "parsec");
-    ParsecClientSetDimensions(parsec, 0, (uint32_t) x, (uint32_t) y, 1.0f);
+    if (!parsec || x <= 0 || y <= 0)
+        return (jint) PARSEC_NOT_RUNNING;
+    return (jint) ParsecClientSetDimensions(
+        parsec, 0, (uint32_t) x, (uint32_t) y, 1.0f);
 }
 
 JNIEXPORT void JNICALL
@@ -416,6 +421,18 @@ Java_parsec_bindings_Parsec_clientIsH265(JNIEnv *env, jobject instance)
     ParsecClientStatus status = {0};
     if (ParsecClientGetStatus(parsec, &status) != PARSEC_OK) return JNI_FALSE;
     return status.decoder[0].h265 ? JNI_TRUE : JNI_FALSE;
+}
+
+/** Atomically return the active decoder dimensions as (width << 32 | height). */
+JNIEXPORT jlong JNICALL
+Java_parsec_bindings_Parsec_clientGetVideoSize(JNIEnv *env, jobject instance)
+{
+    Parsec *parsec = getPointer(env, instance, "parsec");
+    if (!parsec) return 0;
+    ParsecClientStatus status = {0};
+    if (ParsecClientGetStatus(parsec, &status) != PARSEC_OK) return 0;
+    return ((jlong) status.decoder[0].width << 32)
+        | ((jlong) status.decoder[0].height & 0xFFFFFFFFL);
 }
 
 /* ---- Client event pump. Called from the GL render thread once per frame.

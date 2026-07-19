@@ -202,15 +202,4 @@ public final class Settings {
 
     public boolean isTouchpadMode() { return CURSOR_TOUCHPAD.equals(cursorMode()); }
 
-    public int hostWidth() {
-        int idx = resolutionIndex();
-        if (idx <= 0 || idx >= RESOLUTIONS_W.length) return 1920;
-        return RESOLUTIONS_W[idx];
-    }
-
-    public int hostHeight() {
-        int idx = resolutionIndex();
-        if (idx <= 0 || idx >= RESOLUTIONS_H.length) return 1080;
-        return RESOLUTIONS_H[idx];
-    }
 }

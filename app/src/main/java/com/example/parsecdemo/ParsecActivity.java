@@ -68,6 +68,7 @@ public class ParsecActivity extends Activity {
     private MouseButtonRow mouseButtonRow;
     private ImeAccessoryBar imeBar;
     private int imeAccessoryHeightPx;
+    private int currentImeBottomPx;
     private int heldButtonCount = 0; // tracks how many virtual buttons are pressed
     private FrameLayout settingsOverlay;
     private Settings settings;
@@ -120,6 +121,30 @@ public class ParsecActivity extends Activity {
     private boolean awaitingHostVideoConfig = false;
     /** Invalidates delayed fallbacks from older configuration requests. */
     private int hostVideoConfigRequestGeneration = 0;
+    private static final int HOST_VIDEO_RESOLUTION = 1;
+    private static final int HOST_VIDEO_FRAME_RATE = 1 << 1;
+    private static final int HOST_VIDEO_BANDWIDTH = 1 << 2;
+    private static final int HOST_VIDEO_CONSTANT_FPS = 1 << 3;
+    private static final int HOST_VIDEO_ALL = HOST_VIDEO_RESOLUTION
+            | HOST_VIDEO_FRAME_RATE | HOST_VIDEO_BANDWIDTH | HOST_VIDEO_CONSTANT_FPS;
+    /** Union of fields waiting for a host video-config response. */
+    private int pendingHostVideoFields = 0;
+    /** Last complete host response, retained as a safe merge base if a later
+     * GET times out. Never fabricate output/display fields. */
+    private String cachedHostVideoConfig = null;
+    /** Actual decoded frame size, not the requested setting. */
+    private int activeStreamWidth = 0;
+    private int activeStreamHeight = 0;
+
+    // Snapshot taken when the settings overlay opens. It prevents closing an
+    // unchanged menu from needlessly restarting the host's video pipeline.
+    private boolean settingsSnapshotValid = false;
+    private int openedResolutionIndex;
+    private int openedPreferredFps;
+    private int openedBandwidthMbps;
+    private boolean openedConstantFps;
+    private String openedDecoder;
+    private boolean openedDecoderCompatibility;
     /** Tracks the last relative-mode value pushed to the surface so we only
      *  toggle the cursor view / mode on an actual change. */
     private boolean lastRelativeMode = false;
@@ -189,15 +214,10 @@ public class ParsecActivity extends Activity {
         setContentView(root);
         applyImmersive(); // re-apply now that root exists so insets are consumed
 
-        // React to layout changes (fold/unfold, rotation, IME). Pushes new dimensions
-        // to Parsec so the absolute mouse mapping & rendered resolution stay correct.
-        root.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
-            int w = r - l;
-            int h = b - t;
-            if (surface != null && (w != or - ol || h != ob - ot)) {
-                surface.onClientResize(w, h);
-            }
-        });
+        // ClientGLSurface.onSurfaceChanged is the sole owner of the Parsec
+        // viewport size. The root can be larger than the actual GL surface
+        // while the IME/accessory bar is visible, so root dimensions must
+        // never be used for rendering or absolute-input mapping.
 
         String sessionId = getIntent().getStringExtra(LoginActivity.EXTRA_SESSION_ID);
         String peerId = getIntent().getStringExtra(HostListActivity.EXTRA_PEER_ID);
@@ -604,12 +624,40 @@ public class ParsecActivity extends Activity {
         // --- Host video configuration response (message 11) ---
         try {
             String videoConfig = parsec.clientPollVideoConfig();
-            if (videoConfig != null && awaitingHostVideoConfig) {
-                awaitingHostVideoConfig = false;
-                applySettingsToHostVideoConfig(videoConfig);
+            if (videoConfig != null) {
+                cachedHostVideoConfig = videoConfig;
+                if (awaitingHostVideoConfig && pendingHostVideoFields != 0) {
+                    int fields = pendingHostVideoFields;
+                    pendingHostVideoFields = 0;
+                    awaitingHostVideoConfig = false;
+                    applySettingsToHostVideoConfig(videoConfig, fields);
+                }
             }
         } catch (Throwable t) {
             Log.w("ParsecVideoConfig", "Could not process host video config", t);
+        }
+
+        // --- Actual decoded frame size ---
+        try {
+            long packedSize = parsec.clientGetVideoSize();
+            int streamWidth = (int) (packedSize >>> 32);
+            int streamHeight = (int) packedSize;
+            if (streamWidth > 0 && streamHeight > 0
+                    && (streamWidth != activeStreamWidth
+                            || streamHeight != activeStreamHeight)) {
+                activeStreamWidth = streamWidth;
+                activeStreamHeight = streamHeight;
+                Log.i("ParsecViewport", "Decoded stream is "
+                        + streamWidth + "x" + streamHeight);
+                if (surface != null) {
+                    surface.onStreamDimensionsChanged(streamWidth, streamHeight);
+                }
+                // A new aspect ratio changes how much of the IME can fit in
+                // existing letterbox space. Recompute the surface margin now.
+                onImeInsetChanged(currentImeBottomPx);
+            }
+        } catch (Throwable t) {
+            Log.w("ParsecViewport", "Could not read decoded stream size", t);
         }
 
         // --- Stats HUD (refresh ~2x/sec) ---
@@ -684,9 +732,14 @@ public class ParsecActivity extends Activity {
         } catch (Throwable t) { return; }
 
         StringBuilder sb = new StringBuilder();
+        sb.append(currentFps).append(" fps  ")
+                .append(h265 ? "H.265" : "H.264");
+        if (activeStreamWidth > 0 && activeStreamHeight > 0) {
+            sb.append("  ").append(activeStreamWidth).append('×')
+                    .append(activeStreamHeight);
+        }
         sb.append(String.format(java.util.Locale.US,
-                "%d fps  %s  ping %.0fms\ndec %.1fms  enc %.1fms",
-                currentFps, h265 ? "H.265" : "H.264", net, dec, enc));
+                "  ping %.0fms\ndec %.1fms  enc %.1fms", net, dec, enc));
         if (fellBack) sb.append("  [SW decode]");
         // Inline warnings — colorize red when degraded.
         boolean warn = net > 80f || dec > 30f || fellBack;
@@ -821,10 +874,18 @@ public class ParsecActivity extends Activity {
         // We just detach the dead Parsec instance from the surface, dispose
         // it on a worker, then hand the freshly-connected Parsec back to the
         // same surface.
-        if (surface != null) surface.setParsec(null);
+        if (surface != null) {
+            surface.resetTouchState();
+            surface.setParsec(null);
+        }
         final Parsec dying = parsec;
         parsec = null;
         heldButtonCount = 0;
+        activeStreamWidth = activeStreamHeight = 0;
+        cachedHostVideoConfig = null;
+        pendingHostVideoFields = 0;
+        awaitingHostVideoConfig = false;
+        hostVideoConfigRequestGeneration++;
         if (imeBar != null) imeBar.clearLatchedModifiers();
 
         new Thread(() -> {
@@ -878,9 +939,7 @@ public class ParsecActivity extends Activity {
                 }
                 surface.setParsec(parsec);
                 applySettingsToSurface();
-                int w = root.getWidth();
-                int h = root.getHeight();
-                if (w > 0 && h > 0) parsec.clientSetDimensions(w, h);
+                surface.syncClientDimensions();
                 statusView.setVisibility(View.GONE);
                 scheduleNextHealthCheck();
                 startIoPump();
@@ -1190,6 +1249,7 @@ public class ParsecActivity extends Activity {
     }
 
     private void onImeInsetChanged(int imeBottomPx) {
+        currentImeBottomPx = imeBottomPx;
         boolean imeVisible = imeBottomPx > 0;
         int barH = imeAccessoryHeightEstimatePx();
 
@@ -1290,8 +1350,10 @@ public class ParsecActivity extends Activity {
         int sw = root.getWidth();
         int sh = root.getHeight();
         if (sw <= 0 || sh <= 0) return 0;
-        int hostW = settings.hostWidth();
-        int hostH = settings.hostHeight();
+        int hostW = activeStreamWidth > 0
+                ? activeStreamWidth : requestedHostWidth();
+        int hostH = activeStreamHeight > 0
+                ? activeStreamHeight : requestedHostHeight();
         if (hostW <= 0 || hostH <= 0) return 0;
         // Aspect-fit: host fills width OR height while preserving aspect.
         float hostAspect = (float) hostW / hostH;
@@ -1392,60 +1454,16 @@ public class ParsecActivity extends Activity {
     }
 
     /**
-     * Apply the official Parsec host-video configuration message used by the
-     * current Android/iOS clients. Message type 11 accepts a JSON object with
-     * up to three output records; OpenParsec controls the active first output.
-     *
-     * A bandwidth value of zero is deliberately a no-op so merely installing
-     * this client never overwrites the host's existing encoder cap. The
-     * official client's Constant FPS setting maps to fullFPS.
-     */
-    private void sendFallbackHostVideoConfig() {
-        if (parsec == null || settings == null) return;
-        int bandwidth = settings.bandwidthMbps();
-        // Without the host's current config there is no safe bitrate value to
-        // put in a complete fallback record. Constant FPS still applies on
-        // current hosts through the normal GET/merge path.
-        if (bandwidth <= 0) return;
-
-        try {
-            JSONArray video = new JSONArray();
-            video.put(hostVideoEntry(
-                    requestedHostWidth(),
-                    requestedHostHeight(),
-                    bandwidth,
-                    settings.constantFps(),
-                    settings.configFrameRate()));
-            // Match the schema used by the official client. Inactive outputs
-            // retain neutral defaults and do not select a physical display.
-            video.put(hostVideoEntry(0, 0, 50, false, 0));
-            video.put(hostVideoEntry(0, 0, 50, false, 0));
-
-            JSONObject config = new JSONObject();
-            config.put("virtualMicrophone", 0);
-            config.put("virtualTablet", 0);
-            config.put("video", video);
-
-            int status = parsec.clientSendUserData(
-                    Parsec.VIDEO_CONFIG_MSG_ID, config.toString());
-            if (status != parsec.PARSEC_OK) {
-                Log.w("ParsecVideoConfig", "Host video config failed: " + status);
-            } else {
-                Log.i("ParsecVideoConfig", "Requested bandwidth limit "
-                        + bandwidth + " Mbps; constant FPS "
-                        + settings.constantFps());
-            }
-        } catch (Throwable t) {
-            Log.w("ParsecVideoConfig", "Could not build/send host video config", t);
-        }
-    }
-
-    /**
      * Preserve the host's current display and encoder fields, changing only
-     * the requested owner controls before returning message 11.
+     * fields the user actually changed before returning message 11.
      */
-    private void applySettingsToHostVideoConfig(String rawConfig) {
-        if (parsec == null || settings == null) return;
+    private void applySettingsToHostVideoConfig(String rawConfig, int fields) {
+        if (parsec == null || settings == null || fields == 0
+                || rawConfig == null || rawConfig.isEmpty()) {
+            return;
+        }
+        // Keep the unmodified host response as the only safe fallback base.
+        cachedHostVideoConfig = rawConfig;
         int bandwidth = settings.bandwidthMbps();
         int frameRate = settings.configFrameRate();
         int width = requestedHostWidth();
@@ -1457,32 +1475,36 @@ public class ParsecActivity extends Activity {
             JSONObject active = video != null && video.length() > 0
                     ? video.optJSONObject(0) : null;
             if (active == null) {
-                sendFallbackHostVideoConfig();
+                Log.w("ParsecVideoConfig",
+                        "Host response has no primary video record; settings not changed");
                 return;
             }
-            if (width > 0 && height > 0) {
+            if ((fields & HOST_VIDEO_RESOLUTION) != 0
+                    && width > 0 && height > 0) {
                 active.put("resolutionX", width);
                 active.put("resolutionY", height);
             }
-            if (bandwidth > 0)
+            if ((fields & HOST_VIDEO_BANDWIDTH) != 0 && bandwidth > 0)
                 active.put("encoderMaxBitrate", bandwidth);
-            if (frameRate > 0)
+            if ((fields & HOST_VIDEO_FRAME_RATE) != 0 && frameRate > 0)
                 active.put("encoderFPS", frameRate);
-            active.put("fullFPS", settings.constantFps());
+            if ((fields & HOST_VIDEO_CONSTANT_FPS) != 0)
+                active.put("fullFPS", settings.constantFps());
             int status = parsec.clientSendUserData(
                     Parsec.VIDEO_CONFIG_MSG_ID, config.toString());
             if (status != parsec.PARSEC_OK) {
                 Log.w("ParsecVideoConfig", "Merged video config failed: " + status);
             } else {
-                Log.i("ParsecVideoConfig", "Applied owner video settings: "
-                        + (width > 0 && height > 0
-                                ? width + "x" + height + "; " : "host resolution; ")
-                        + (bandwidth > 0 ? bandwidth + " Mbps; " : "host bitrate; ")
-                        + "constant FPS " + settings.constantFps());
+                Log.i("ParsecVideoConfig", "Applied owner video fields mask="
+                        + fields + " resolution=" + width + "x" + height
+                        + " bitrate=" + bandwidth + " FPS=" + frameRate
+                        + " constantFPS=" + settings.constantFps());
             }
         } catch (Throwable t) {
-            Log.w("ParsecVideoConfig", "Invalid host video config; using fallback", t);
-            sendFallbackHostVideoConfig();
+            // Fabricating the rest of message 11 (especially output/device)
+            // can select the wrong monitor. Fail closed instead.
+            Log.w("ParsecVideoConfig",
+                    "Invalid host video config; settings not changed", t);
         }
     }
 
@@ -1495,21 +1517,25 @@ public class ParsecActivity extends Activity {
     private int requestedHostWidth() {
         int configured = settings != null ? settings.configResolutionX() : 0;
         if (configured > 0) return configured;
-        if (surface != null && surface.getWidth() > 0) return surface.getWidth();
-        return root != null ? Math.max(0, root.getWidth()) : 0;
+        // "Match Client" follows the stable panel, not a temporarily shrunken
+        // GL surface while the on-screen keyboard is open.
+        if (root != null && root.getWidth() > 0) return root.getWidth();
+        return surface != null ? Math.max(0, surface.getWidth()) : 0;
     }
 
     private int requestedHostHeight() {
         int configured = settings != null ? settings.configResolutionY() : 0;
         if (configured > 0) return configured;
-        if (surface != null && surface.getHeight() > 0) return surface.getHeight();
-        return root != null ? Math.max(0, root.getHeight()) : 0;
+        if (root != null && root.getHeight() > 0) return root.getHeight();
+        return surface != null ? Math.max(0, surface.getHeight()) : 0;
     }
 
-    /** Ask for the current config before applying owner video settings. */
-    private void requestHostVideoConfig() {
-        if (parsec == null || settings == null) return;
+    /** Ask for the current config before applying selected owner fields. */
+    private void requestHostVideoConfig(int fields) {
+        if (parsec == null || settings == null || fields == 0) return;
 
+        pendingHostVideoFields |= fields;
+        if (awaitingHostVideoConfig) return;
         awaitingHostVideoConfig = true;
         final int generation = ++hostVideoConfigRequestGeneration;
         int status;
@@ -1520,33 +1546,51 @@ public class ParsecActivity extends Activity {
         }
         if (status != parsec.PARSEC_OK) {
             awaitingHostVideoConfig = false;
-            sendFallbackHostVideoConfig();
+            int pending = pendingHostVideoFields;
+            pendingHostVideoFields = 0;
+            applyCachedHostVideoConfig(pending);
             return;
         }
 
-        // Older hosts may accept SET but never answer GET. Do not leave the
-        // user's selection inert in that case.
+        // Older hosts may accept SET but never answer GET. Reuse only a
+        // previously returned complete config; never fabricate display fields.
         new android.os.Handler(getMainLooper()).postDelayed(() -> {
             if (generation == hostVideoConfigRequestGeneration
                     && awaitingHostVideoConfig && !isFinishing() && !isDestroyed()) {
                 awaitingHostVideoConfig = false;
-                sendFallbackHostVideoConfig();
+                int pending = pendingHostVideoFields;
+                pendingHostVideoFields = 0;
+                applyCachedHostVideoConfig(pending);
             }
         }, 1000L);
     }
 
-    private static JSONObject hostVideoEntry(
-            int width, int height, int bandwidth, boolean constantFps, int frameRate)
-            throws org.json.JSONException {
-        JSONObject entry = new JSONObject();
-        entry.put("encoderFPS", frameRate);
-        entry.put("resolutionX", width);
-        entry.put("resolutionY", height);
-        entry.put("fullFPS", constantFps);
-        entry.put("hostOS", 0);
-        entry.put("output", "none");
-        entry.put("encoderMaxBitrate", bandwidth);
-        return entry;
+    private void applyCachedHostVideoConfig(int fields) {
+        if (fields == 0) return;
+        if (cachedHostVideoConfig != null) {
+            applySettingsToHostVideoConfig(cachedHostVideoConfig, fields);
+        } else {
+            Log.w("ParsecVideoConfig",
+                    "Host did not return a mergeable video config; fields mask="
+                            + fields);
+            // Resolution has a documented SDK path and can safely fall back
+            // without fabricating the host's output/device JSON. Bitrate,
+            // frame rate, and Constant FPS do not.
+            if ((fields & HOST_VIDEO_RESOLUTION) != 0 && parsec != null) {
+                try {
+                    int status = parsec.clientSetConfig(
+                            settings.decoderSoftwareFlag(),
+                            settings.decoderH265Flag(),
+                            requestedHostWidth(),
+                            requestedHostHeight());
+                    Log.i("ParsecVideoConfig",
+                            "Resolution SDK fallback returned " + status);
+                } catch (Throwable t) {
+                    Log.w("ParsecVideoConfig",
+                            "Resolution SDK fallback failed", t);
+                }
+            }
+        }
     }
 
     /** The host-side control channel becomes ready just after clientConnect. */
@@ -1554,7 +1598,7 @@ public class ParsecActivity extends Activity {
         if (settings == null) return;
         new android.os.Handler(getMainLooper()).postDelayed(() -> {
             if (!isFinishing() && !isDestroyed() && !isReconnecting) {
-                requestHostVideoConfig();
+                requestHostVideoConfig(HOST_VIDEO_ALL);
             }
         }, 750L);
     }
@@ -1564,7 +1608,6 @@ public class ParsecActivity extends Activity {
         surface.setTrackpadMode(settings.isTouchpadMode());
         surface.setSensitivity(settings.mouseSensitivity());
         surface.setScrollSensitivity(settings.scrollSensitivity());
-        surface.setHostDimensions(settings.hostWidth(), settings.hostHeight());
         if (cursorView != null) {
             int sz = cursorSizePx();
             ViewGroup.LayoutParams lp = cursorView.getLayoutParams();
@@ -1583,6 +1626,13 @@ public class ParsecActivity extends Activity {
 
     private void openSettings() {
         if (settingsOverlay != null) return;
+        openedResolutionIndex = settings.resolutionIndex();
+        openedPreferredFps = settings.preferredFps();
+        openedBandwidthMbps = settings.bandwidthMbps();
+        openedConstantFps = settings.constantFps();
+        openedDecoder = settings.decoder();
+        openedDecoderCompatibility = settings.decoderCompatibility();
+        settingsSnapshotValid = true;
         settingsOverlay = SettingsPanel.build(this, settings, this::closeSettings);
         root.addView(settingsOverlay, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -1594,18 +1644,45 @@ public class ParsecActivity extends Activity {
             settingsOverlay = null;
             applySettingsToSurface();
             syncStatsHud(); // user may have toggled Show Performance Stats
-            if (parsec != null) {
+            boolean resolutionChanged = settingsSnapshotValid
+                    && openedResolutionIndex != settings.resolutionIndex();
+            boolean decoderChanged = settingsSnapshotValid
+                    && (!openedDecoder.equals(settings.decoder())
+                            || openedDecoderCompatibility
+                                    != settings.decoderCompatibility());
+            int hostVideoFields = 0;
+            if (resolutionChanged) hostVideoFields |= HOST_VIDEO_RESOLUTION;
+            if (settingsSnapshotValid
+                    && openedPreferredFps != settings.preferredFps()) {
+                hostVideoFields |= HOST_VIDEO_FRAME_RATE;
+            }
+            if (settingsSnapshotValid
+                    && openedBandwidthMbps != settings.bandwidthMbps()) {
+                hostVideoFields |= HOST_VIDEO_BANDWIDTH;
+            }
+            if (settingsSnapshotValid
+                    && openedConstantFps != settings.constantFps()) {
+                hostVideoFields |= HOST_VIDEO_CONSTANT_FPS;
+            }
+            settingsSnapshotValid = false;
+
+            if (resolutionChanged && surface != null) {
+                surface.prepareForStreamResize();
+            }
+            if (parsec != null && decoderChanged) {
                 try {
-                    int status = parsec.clientSetDecoder(
+                    int status = parsec.clientSetConfig(
                             settings.decoderSoftwareFlag(),
-                            settings.decoderH265Flag());
+                            settings.decoderH265Flag(),
+                            0,
+                            0);
                     if (status != parsec.PARSEC_OK)
-                        Log.w("ParsecCodec", "Could not apply decoder setting: " + status);
+                        Log.w("ParsecConfig", "Could not apply live client setting: " + status);
                 } catch (Throwable t) {
-                    Log.w("ParsecCodec", "Could not apply decoder setting", t);
+                    Log.w("ParsecConfig", "Could not apply live client setting", t);
                 }
             }
-            requestHostVideoConfig();
+            if (hostVideoFields != 0) requestHostVideoConfig(hostVideoFields);
         }
     }
 
@@ -1786,6 +1863,9 @@ public class ParsecActivity extends Activity {
     protected void onPause() {
         cancelQuestCadHold();
         if (surface != null) {
+            // Release cached/synthetic mouse state before Horizon can drop the
+            // matching UP event while the panel is backgrounded.
+            surface.resetTouchState();
             // Stop the GL/audio polling thread first, then flush device audio.
             // This ordering prevents a final poll from refilling the stream.
             surface.onPause();
@@ -1813,6 +1893,7 @@ public class ParsecActivity extends Activity {
                         + " stale audio packets after resume");
             }
             surface.onResume();
+            surface.syncClientDimensions();
         }
         applyImmersive();
         // Resume the watchdog. If we came back from background and the session

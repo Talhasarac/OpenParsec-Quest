@@ -27,15 +27,16 @@ public class Parsec {
     public native int clientConnect(String sessionID, String peerID,
                                     int decoderSoftware, int decoderH265,
                                     int resolutionX, int resolutionY);
-    /** Apply decoder and codec preferences to the active stream. */
-    public native int clientSetDecoder(int decoderSoftware, int decoderH265);
+    /** Apply decoder, codec, and owner host-resolution preferences live. */
+    public native int clientSetConfig(int decoderSoftware, int decoderH265,
+                                      int resolutionX, int resolutionY);
     public native void clientPollAudio();
     public native void clientPauseAudio();
     /** Discard audio accumulated while backgrounded, restart output, and
      *  return the number of stale SDK packets removed. */
     public native int clientResumeAudio();
     public native void clientDestroy();
-    public native void clientSetDimensions(int x, int y);
+    public native int clientSetDimensions(int x, int y);
     public native void clientGLRenderFrame();
     public native int clientSendMouseMotion(boolean relative, int x, int y);
     public native int clientSendMouseButton(int button, boolean pressed);
@@ -59,6 +60,8 @@ public class Parsec {
     public native float clientGetEncodeLatency();   // ms
     public native boolean clientDecoderFellBack();  // true if SW-decode fallback occurred
     public native boolean clientIsH265();            // actual negotiated stream codec
+    /** Active decoder size packed as (width << 32 | height), or zero. */
+    public native long clientGetVideoSize();
 
     // ---- Client event pump (call once per render frame) ----
     /** Drain pending client events (cursor mode, rumble, host user-data). */

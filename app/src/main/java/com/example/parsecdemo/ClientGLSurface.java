@@ -127,8 +127,10 @@ public class ClientGLSurface extends GLSurfaceView {
      *  the decision sticks until all fingers lift. */
     private boolean panning = false;
 
-    private int hostWidth = 1920;
-    private int hostHeight = 1080;
+    /** Latest decoded stream size reported by the SDK. This is distinct from
+     * the Android/EGL surface size used for rendering and absolute input. */
+    private volatile int streamWidth = 0;
+    private volatile int streamHeight = 0;
 
     private TrackpadListener trackpadListener;
 
@@ -228,6 +230,17 @@ public class ClientGLSurface extends GLSurfaceView {
         synchronized (parsecLock) {
             this.parsec = parsec;
             this.parsecAlive = parsec != null;
+            if (parsecAlive && surfaceWidth > 0 && surfaceHeight > 0) {
+                // A preserved EGL surface does not receive onSurfaceChanged
+                // again after reconnect. Re-attach the new SDK instance to
+                // the actual GL viewport immediately.
+                parsec.clientSetDimensions(surfaceWidth, surfaceHeight);
+            }
+        }
+        if (parsec == null) {
+            streamWidth = 0;
+            streamHeight = 0;
+            hardwareMousePositionValid = false;
         }
     }
 
@@ -312,26 +325,42 @@ public class ClientGLSurface extends GLSurfaceView {
         }
     }
 
-    public void setHostDimensions(int w, int h) {
-        if (w > 0) this.hostWidth = w;
-        if (h > 0) this.hostHeight = h;
+    /** Re-send the authoritative EGL viewport to the active SDK instance. */
+    public void syncClientDimensions() {
+        int width = surfaceWidth;
+        int height = surfaceHeight;
+        if (width <= 0 || height <= 0) return;
+        synchronized (parsecLock) {
+            if (parsecAlive && parsec != null) {
+                parsec.clientSetDimensions(width, height);
+            }
+        }
     }
 
-    /** Called by ParsecActivity when the visible view is resized (fold/unfold, rotation).
-     *  Note: this does NOT push dimensions to Parsec directly — the GL renderer's
-     *  onSurfaceChanged is the authoritative source and runs against the actual
-     *  EGL surface size. Passing root dimensions here would race with that and
-     *  could leave the host renderer with the wrong viewport (off-center). */
-    public void onClientResize(int width, int height) {
-        // Only update bookkeeping if it isn't already matching the GL side.
-        if (surfaceWidth != width || surfaceHeight != height) {
-            surfaceWidth = width;
-            surfaceHeight = height;
+    /**
+     * Called when the SDK begins decoding a different host frame size.
+     * Re-applying the unchanged client viewport forces the renderer to
+     * recalculate its aspect-fit rectangle; resetting zoom prevents an old
+     * transform from showing only part of the newly-sized desktop.
+     */
+    public void onStreamDimensionsChanged(int width, int height) {
+        if (width <= 0 || height <= 0
+                || (streamWidth == width && streamHeight == height)) {
+            return;
         }
-        // Re-center cursor to the new viewport
-        cursorX = width / 2f;
-        cursorY = height / 2f;
-        if (trackpadMode) notifyCursor(true);
+        boolean replacingActiveStream = streamWidth > 0 && streamHeight > 0;
+        streamWidth = width;
+        streamHeight = height;
+        resetZoom();
+        syncClientDimensions();
+        if (replacingActiveStream) resetTouchState();
+    }
+
+    /** Prepare for a user-requested host resize before the first new frame. */
+    public void prepareForStreamResize() {
+        resetZoom();
+        resetTouchState();
+        syncClientDimensions();
     }
 
     /** Wipe transient input state so a fold/unfold (which can drop touch events
@@ -339,6 +368,7 @@ public class ClientGLSurface extends GLSurfaceView {
      *  mode, or a frozen finger position. Releases all mouse buttons on the
      *  host side, clears scroll accumulation, and re-centers the cursor. */
     public void resetTouchState() {
+        cancelDirectPendingClick();
         scrollMode = false;
         scrollAccum = 0f;
         externalButtonHeld = false;
@@ -347,10 +377,23 @@ public class ClientGLSurface extends GLSurfaceView {
         lastX = lastY = 0f;
         twoFingerScroll = false;
         twoFingerScrollAccum = 0f;
+        twoFingerScrollAccumX = 0f;
         twoFingerLastCentroidY = 0f;
+        twoFingerLastCentroidX = 0f;
+        twoFingerDownTime = 0L;
+        twoFingerDownCentroidX = 0f;
+        twoFingerDownCentroidY = 0f;
+        twoFingerScrollFired = false;
+        gestureStartCursorX = cursorX;
+        gestureStartCursorY = cursorY;
         tapTapHoldDragActive = false;
         directLeftHeld = false;
         lastTapUpMs = 0L;
+        pinching = false;
+        panning = false;
+        panLastCx = panLastCy = 0f;
+        lastMouseButtons = 0;
+        hardwareMousePositionValid = false;
         synchronized (parsecLock) {
             if (parsecAlive && parsec != null) {
                 // Release all standard mouse buttons defensively.
@@ -374,9 +417,11 @@ public class ClientGLSurface extends GLSurfaceView {
         setRenderer(new Renderer() {
             @Override public void onSurfaceCreated(GL10 gl10, javax.microedition.khronos.egl.EGLConfig eglConfig) {}
             @Override public void onSurfaceChanged(GL10 gl10, int width, int height) {
+                boolean hadViewport = surfaceWidth > 0 && surfaceHeight > 0;
+                boolean changed = surfaceWidth != width || surfaceHeight != height;
                 surfaceWidth = width;
                 surfaceHeight = height;
-                if (cursorX == 0f && cursorY == 0f) {
+                if (changed || (cursorX == 0f && cursorY == 0f)) {
                     cursorX = width / 2f;
                     cursorY = height / 2f;
                 }
@@ -384,6 +429,9 @@ public class ClientGLSurface extends GLSurfaceView {
                     if (parsecAlive && parsec != null) parsec.clientSetDimensions(width, height);
                 }
                 if (trackpadMode) notifyCursor(true);
+                if (changed && hadViewport) {
+                    post(ClientGLSurface.this::resetTouchState);
+                }
             }
             @Override public void onDrawFrame(GL10 gl10) {
                 synchronized (parsecLock) {
@@ -490,7 +538,10 @@ public class ClientGLSurface extends GLSurfaceView {
      *  and the local cursor is hidden (the host draws its own). Toggled by the
      *  activity's IO pump from Parsec.clientGetCursorRelative(). */
     private volatile boolean relativeMouseMode = false;
-    public void setRelativeMouseMode(boolean on) { this.relativeMouseMode = on; }
+    public void setRelativeMouseMode(boolean on) {
+        if (this.relativeMouseMode != on) hardwareMousePositionValid = false;
+        this.relativeMouseMode = on;
+    }
     public boolean isRelativeMouseMode() { return relativeMouseMode; }
 
     @Override
@@ -501,16 +552,16 @@ public class ClientGLSurface extends GLSurfaceView {
         if (action == MotionEvent.ACTION_HOVER_MOVE
                 || action == MotionEvent.ACTION_HOVER_ENTER
                 || action == MotionEvent.ACTION_HOVER_EXIT) {
-            if (relativeMouseMode) {
-                // Pointer-lock: send the hardware mouse delta. RELATIVE-source
-                // devices report deltas in X/Y directly; absolute-source mice
-                // are diffed against the last position.
-                sendHardwareMouseRelative(ev);
-            } else {
-                sendAbsoluteMotionMapped(ev.getX(), ev.getY());
-                lastMouseRawX = ev.getX();
-                lastMouseRawY = ev.getY();
-            }
+            updateHardwareMousePosition(ev);
+            // A hover with no held buttons is also a reliable cleanup signal
+            // if Horizon dropped an earlier ACTION_UP.
+            updateMouseButtons(ev);
+            return true;
+        }
+        if (action == MotionEvent.ACTION_BUTTON_PRESS
+                || action == MotionEvent.ACTION_BUTTON_RELEASE) {
+            updateHardwareMousePosition(ev);
+            updateMouseButtons(ev);
             return true;
         }
         if (action == MotionEvent.ACTION_SCROLL) {
@@ -529,6 +580,7 @@ public class ClientGLSurface extends GLSurfaceView {
     }
 
     private float lastMouseRawX = 0f, lastMouseRawY = 0f;
+    private boolean hardwareMousePositionValid = false;
 
     /** Emit a relative motion delta from a hardware-mouse event for pointer-lock. */
     private void sendHardwareMouseRelative(MotionEvent ev) {
@@ -539,6 +591,12 @@ public class ClientGLSurface extends GLSurfaceView {
             dx = ev.getX();
             dy = ev.getY();
         } else {
+            if (!hardwareMousePositionValid) {
+                lastMouseRawX = ev.getX();
+                lastMouseRawY = ev.getY();
+                hardwareMousePositionValid = true;
+                return;
+            }
             dx = ev.getX() - lastMouseRawX;
             dy = ev.getY() - lastMouseRawY;
             lastMouseRawX = ev.getX();
@@ -555,16 +613,49 @@ public class ClientGLSurface extends GLSurfaceView {
     /** Handle a SOURCE_MOUSE touch event: position update + edge-triggered
      *  button press/release. */
     private boolean handleMouseTouchEvent(MotionEvent ev) {
-        // Position update — relative delta under pointer-lock, else absolute.
+        updateHardwareMousePosition(ev);
+        updateMouseButtons(ev);
+        return true;
+    }
+
+    private void updateHardwareMousePosition(MotionEvent ev) {
         if (relativeMouseMode) {
             sendHardwareMouseRelative(ev);
         } else {
             sendAbsoluteMotionMapped(ev.getX(), ev.getY());
             lastMouseRawX = ev.getX();
             lastMouseRawY = ev.getY();
+            hardwareMousePositionValid = true;
+        }
+    }
+
+    /**
+     * Normalize Android's two mouse-button delivery styles. Physical mice
+     * commonly use ACTION_BUTTON_PRESS/RELEASE while the Quest pointer often
+     * uses ACTION_DOWN/UP and may omit buttonState on DOWN.
+     */
+    private void updateMouseButtons(MotionEvent ev) {
+        int action = ev.getActionMasked();
+        int now = ev.getButtonState();
+        int actionButton = ev.getActionButton();
+        if (action == MotionEvent.ACTION_BUTTON_PRESS && actionButton != 0) {
+            now |= actionButton;
+        } else if (action == MotionEvent.ACTION_BUTTON_RELEASE && actionButton != 0) {
+            now &= ~actionButton;
+        } else if (action == MotionEvent.ACTION_DOWN && now == 0) {
+            // A mouse-source DOWN is a primary click even on devices which
+            // fail to populate buttonState (observed with 2D Quest panels).
+            now = lastMouseButtons | MotionEvent.BUTTON_PRIMARY;
+        } else if (action == MotionEvent.ACTION_UP
+                || action == MotionEvent.ACTION_CANCEL) {
+            now = 0;
+        } else if (action == MotionEvent.ACTION_MOVE
+                && now == 0 && lastMouseButtons != 0) {
+            // Do not synthesize an early release for devices that omit the
+            // held bit on MOVE; their UP/RELEASE event is authoritative.
+            now = lastMouseButtons;
         }
 
-        int now = ev.getButtonState();
         int changed = now ^ lastMouseButtons;
         if (changed != 0) {
             dispatchMouseButton(changed, now, MotionEvent.BUTTON_PRIMARY,
@@ -575,7 +666,6 @@ public class ClientGLSurface extends GLSurfaceView {
                     2 /* MOUSE_MIDDLE */);
             lastMouseButtons = now;
         }
-        return true;
     }
 
     private void dispatchMouseButton(int changed, int now, int androidMask,
@@ -654,7 +744,8 @@ public class ClientGLSurface extends GLSurfaceView {
                 } else if (directLeftHeld) {
                     sendButton(false);
                     directLeftHeld = false;
-                } else if (directPendingClick != null) {
+                } else if (directPendingClick != null
+                        && action == MotionEvent.ACTION_UP) {
                     // Very fast tap that lifted before the defer window: fire
                     // a synchronous click+release at the touch position so
                     // the user still gets a click.
@@ -664,6 +755,10 @@ public class ClientGLSurface extends GLSurfaceView {
                     sendAbsoluteMotionMapped(x, y);
                     sendButton(true);
                     sendButton(false);
+                } else {
+                    // ACTION_CANCEL must never turn a pending touch into a
+                    // host click.
+                    cancelDirectPendingClick();
                 }
                 return true;
             }
@@ -808,6 +903,7 @@ public class ClientGLSurface extends GLSurfaceView {
                     sendButton(false);
                     tapTapHoldDragActive = false;
                 }
+                lastTapUpMs = 0L;
                 return true;
         }
         return true;
