@@ -6,7 +6,6 @@ import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.util.TypedValue;
 import android.view.Gravity;
-import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
@@ -45,17 +44,12 @@ public final class SessionFab {
     private final FrameLayout root;
     private final FrameLayout fab;
     private final List<Item> items;
+    private final HoldToDragTouchListener dragTouchListener;
     private FrameLayout menu;
     private boolean menuOpen = false;
 
     private static final int FAB_SIZE_DP = 56;
     private static final int EDGE_PAD_DP = 16;
-    private static final int TAP_SLOP_DP = 8;
-
-    private float touchOffsetX, touchOffsetY;
-    private float downRawX, downRawY;
-    private boolean dragging = false;
-    private long downTimeMs;
 
     public SessionFab(Activity activity, FrameLayout root, List<Item> items) {
         this.activity = activity;
@@ -97,7 +91,10 @@ public final class SessionFab {
             fab.setY(root.getHeight() / 3f);
         });
 
-        fab.setOnTouchListener((v, ev) -> onFabTouch(ev));
+        fab.setOnClickListener(v -> toggleMenu());
+        dragTouchListener = new HoldToDragTouchListener(
+                fab, root, this::hideMenu, this::snapToNearestEdge);
+        fab.setOnTouchListener(dragTouchListener);
     }
 
     public void setVisible(boolean visible) {
@@ -109,6 +106,7 @@ public final class SessionFab {
      *  hatch (e.g. invoked by the activity's 4-finger tap) in case the FAB
      *  ends up offscreen after a rotation, fold, or other layout change. */
     public void resetPosition() {
+        dragTouchListener.cancelGesture();
         hideMenu();
         Runnable apply = () -> {
             int rw = root.getWidth();
@@ -129,57 +127,6 @@ public final class SessionFab {
             menu = null;
         }
         menuOpen = false;
-    }
-
-    private boolean onFabTouch(MotionEvent ev) {
-        switch (ev.getAction()) {
-            case MotionEvent.ACTION_DOWN:
-                touchOffsetX = ev.getRawX() - fab.getX();
-                touchOffsetY = ev.getRawY() - fab.getY();
-                downRawX = ev.getRawX();
-                downRawY = ev.getRawY();
-                downTimeMs = System.currentTimeMillis();
-                dragging = false;
-                // Do NOT hideMenu() here. Hiding on every DOWN flipped
-                // menuOpen to false so the toggleMenu() in ACTION_UP always
-                // saw a closed menu and re-opened it, making a second FAB
-                // tap fail to dismiss. We let ACTION_UP do the real toggle.
-                return true;
-            case MotionEvent.ACTION_MOVE: {
-                float nx = ev.getRawX() - touchOffsetX;
-                float ny = ev.getRawY() - touchOffsetY;
-                float dragDist = Math.abs(ev.getRawX() - downRawX) + Math.abs(ev.getRawY() - downRawY);
-                if (dragDist > dp(TAP_SLOP_DP)) {
-                    if (!dragging) {
-                        dragging = true;
-                        // Dragging the FAB closes the menu; tapping just toggles.
-                        hideMenu();
-                    }
-                }
-                if (dragging) {
-                    float maxX = root.getWidth() - fab.getWidth();
-                    float maxY = root.getHeight() - fab.getHeight();
-                    nx = Math.max(0, Math.min(nx, maxX));
-                    ny = Math.max(0, Math.min(ny, maxY));
-                    fab.setX(nx);
-                    fab.setY(ny);
-                }
-                return true;
-            }
-            case MotionEvent.ACTION_UP: {
-                long dt = System.currentTimeMillis() - downTimeMs;
-                if (!dragging && dt < 400) {
-                    toggleMenu();
-                } else {
-                    snapToNearestEdge();
-                }
-                return true;
-            }
-            case MotionEvent.ACTION_CANCEL:
-                snapToNearestEdge();
-                return true;
-        }
-        return false;
     }
 
     private void snapToNearestEdge() {

@@ -60,6 +60,9 @@ public class ParsecActivity extends Activity {
     private FrameLayout debugGrid;
     private SessionFab fab;
     private ImageButton keyboardButton;
+    private HoldToDragTouchListener keyboardButtonTouchListener;
+    private boolean keyboardButtonDragged = false;
+    private Float keyboardButtonImeBackupY = null;
     private EditText keyboardCapture;
     private boolean ignoreCaptureChange = false;
     private MouseButtonRow mouseButtonRow;
@@ -1091,6 +1094,11 @@ public class ParsecActivity extends Activity {
                 com.google.android.material.R.attr.colorPrimaryContainer));
         keyboardButton.setBackground(bg);
         keyboardButton.setOnClickListener(v -> toggleKeyboard());
+        keyboardButtonTouchListener = new HoldToDragTouchListener(
+                keyboardButton, root,
+                () -> keyboardButtonDragged = true,
+                this::finishKeyboardButtonDrag);
+        keyboardButton.setOnTouchListener(keyboardButtonTouchListener);
 
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(dp(44), dp(44),
                 Gravity.BOTTOM | Gravity.END);
@@ -1098,6 +1106,26 @@ public class ParsecActivity extends Activity {
         lp.rightMargin = dp(16);
         root.addView(keyboardButton, lp);
         updateKeyboardButton();
+    }
+
+    /** Convert the keyboard button from bottom/end gravity to a stable
+     * top/left position after a long-hold drag finishes. */
+    private void finishKeyboardButtonDrag() {
+        if (keyboardButton == null) return;
+        float x = keyboardButton.getX();
+        float y = keyboardButton.getY();
+        FrameLayout.LayoutParams lp =
+                (FrameLayout.LayoutParams) keyboardButton.getLayoutParams();
+        lp.gravity = Gravity.TOP | Gravity.START;
+        lp.leftMargin = lp.topMargin = lp.rightMargin = lp.bottomMargin = 0;
+        keyboardButton.setLayoutParams(lp);
+        keyboardButton.post(() -> {
+            if (keyboardButton == null || root == null) return;
+            float maxX = Math.max(0, root.getWidth() - keyboardButton.getWidth());
+            float maxY = Math.max(0, root.getHeight() - keyboardButton.getHeight());
+            keyboardButton.setX(Math.max(0, Math.min(x, maxX)));
+            keyboardButton.setY(Math.max(0, Math.min(y, maxY)));
+        });
     }
 
     private void updateKeyboardButton() {
@@ -1203,9 +1231,23 @@ public class ParsecActivity extends Activity {
         // open.
         int liftBy = imeVisible ? imeBottomPx + barH + dp(8) : dp(16);
         if (keyboardButton != null) {
-            FrameLayout.LayoutParams klp = (FrameLayout.LayoutParams) keyboardButton.getLayoutParams();
-            klp.bottomMargin = liftBy;
-            keyboardButton.setLayoutParams(klp);
+            if (!keyboardButtonDragged) {
+                FrameLayout.LayoutParams klp =
+                        (FrameLayout.LayoutParams) keyboardButton.getLayoutParams();
+                klp.bottomMargin = liftBy;
+                keyboardButton.setLayoutParams(klp);
+            } else if (imeVisible) {
+                float occlusionTop = root.getHeight() - imeBottomPx - barH;
+                if (keyboardButton.getY() + keyboardButton.getHeight() > occlusionTop) {
+                    if (keyboardButtonImeBackupY == null)
+                        keyboardButtonImeBackupY = keyboardButton.getY();
+                    keyboardButton.setY(Math.max(0,
+                            occlusionTop - keyboardButton.getHeight() - dp(8)));
+                }
+            } else if (keyboardButtonImeBackupY != null) {
+                keyboardButton.setY(keyboardButtonImeBackupY);
+                keyboardButtonImeBackupY = null;
+            }
         }
 
         // Mouse-button row: two modes.
@@ -1297,7 +1339,7 @@ public class ParsecActivity extends Activity {
     /** Add the current cutout insets to each overlay button's edge margins so
      *  they stay clear of the punch-out without affecting the GL surface. */
     private void applyCutoutToOverlayButtons() {
-        if (keyboardButton != null) {
+        if (keyboardButton != null && !keyboardButtonDragged) {
             FrameLayout.LayoutParams klp = (FrameLayout.LayoutParams) keyboardButton.getLayoutParams();
             klp.rightMargin = dp(16) + cutoutSafeRightPx;
             keyboardButton.setLayoutParams(klp);
@@ -1602,7 +1644,7 @@ public class ParsecActivity extends Activity {
     @Override
     public boolean dispatchTouchEvent(MotionEvent ev) {
         // 4-finger tap recovery: if any single gesture reaches 4 simultaneous
-        // pointers, snap the FAB and mouse-button row back to their default
+        // pointers, snap the FAB, keyboard button, and mouse-button row back to their default
         // positions so the user can recover from accidentally dragging them
         // offscreen.
         switch (ev.getActionMasked()) {
@@ -1631,9 +1673,24 @@ public class ParsecActivity extends Activity {
 
     /** Recovery hatch invoked by a 4-finger tap. Snaps overlays back to their
      *  default positions and clears any saved drag location, so a user who
-     *  has dragged the mouse row or FAB offscreen can get them back. */
+     *  has dragged an overlay control offscreen can get it back. */
     private void triggerOverlayReset() {
         if (fab != null) fab.resetPosition();
+        if (keyboardButton != null) {
+            if (keyboardButtonTouchListener != null)
+                keyboardButtonTouchListener.cancelGesture();
+            keyboardButtonDragged = false;
+            keyboardButtonImeBackupY = null;
+            keyboardButton.setTranslationX(0);
+            keyboardButton.setTranslationY(0);
+            FrameLayout.LayoutParams klp =
+                    (FrameLayout.LayoutParams) keyboardButton.getLayoutParams();
+            klp.gravity = Gravity.BOTTOM | Gravity.END;
+            klp.leftMargin = klp.topMargin = 0;
+            klp.rightMargin = dp(16) + cutoutSafeRightPx;
+            klp.bottomMargin = dp(16);
+            keyboardButton.setLayoutParams(klp);
+        }
         if (mouseButtonRow != null) {
             settings.resetMouseRowPosition();
             mouseRowImeBackupY = null;
