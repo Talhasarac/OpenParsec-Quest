@@ -1,5 +1,7 @@
 package com.example.parsecdemo;
 
+import android.util.Log;
+import android.util.SparseArray;
 import android.view.InputDevice;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
@@ -9,15 +11,24 @@ import parsec.bindings.Parsec;
 /**
  * Translates Android KeyEvent + MotionEvent from physical/integrated gamepads
  * (Xbox controllers, ROG Phone shoulders, Razer Edge sticks, etc.) into
- * Parsec gamepad messages. Pure static dispatcher — call from
+ * Parsec gamepad messages. Static dispatcher with per-device state — call from
  * Activity.dispatchKeyEvent / dispatchGenericMotionEvent.
  */
 public final class GamepadInputHandler {
 
-    /** Stable virtual gamepad id used for ALL physical gamepad input.
-     *  Distinct from the virtual on-screen pad ({@code 1}) so a user with both
-     *  doesn't have one pad masking the other on the host. */
-    public static final int PHYSICAL_GAMEPAD_ID = 2;
+    /** The on-screen pad owns id 1; physical devices are assigned from 2. */
+    private static final int FIRST_PHYSICAL_GAMEPAD_ID = 2;
+    private static final SparseArray<DeviceState> DEVICE_STATES = new SparseArray<>();
+
+    private static final class DeviceState {
+        final int parsecGamepadId;
+        int lastHatX;
+        int lastHatY;
+
+        DeviceState(int parsecGamepadId) {
+            this.parsecGamepadId = parsecGamepadId;
+        }
+    }
 
     private GamepadInputHandler() {}
 
@@ -32,14 +43,25 @@ public final class GamepadInputHandler {
     public static boolean handleKeyEvent(Parsec parsec, KeyEvent ev) {
         if (parsec == null) return false;
         if (!isGamepadSource(ev.getSource())) return false;
+        InputDevice device = ev.getDevice();
+        if (device == null) return false;
+        // Touch controllers belong to Horizon pointer input and the
+        // Quest-specific shortcut/scroll path. Sending their leftover events
+        // as a host gamepad makes a paired Bluetooth controller fight them.
+        if (QuestPlatform.isTouchController(device)) return false;
         int parsecBtn = mapKey(ev.getKeyCode());
         if (parsecBtn < 0) return false;
+        if (ev.getAction() != KeyEvent.ACTION_DOWN
+                && ev.getAction() != KeyEvent.ACTION_UP) {
+            return false;
+        }
+        DeviceState state = stateFor(ev.getDeviceId(), device);
         if (ev.getAction() == KeyEvent.ACTION_DOWN) {
-            parsec.clientSendGamepadButton(PHYSICAL_GAMEPAD_ID, parsecBtn, true);
+            parsec.clientSendGamepadButton(state.parsecGamepadId, parsecBtn, true);
             return true;
         }
         if (ev.getAction() == KeyEvent.ACTION_UP) {
-            parsec.clientSendGamepadButton(PHYSICAL_GAMEPAD_ID, parsecBtn, false);
+            parsec.clientSendGamepadButton(state.parsecGamepadId, parsecBtn, false);
             return true;
         }
         return false;
@@ -53,47 +75,103 @@ public final class GamepadInputHandler {
         if (ev.getAction() != MotionEvent.ACTION_MOVE) return false;
 
         InputDevice dev = ev.getDevice();
+        if (dev == null) return false;
+        if (QuestPlatform.isTouchController(dev)) return false;
+        DeviceState state = stateFor(ev.getDeviceId(), dev);
+        int gamepadId = state.parsecGamepadId;
         // Left thumbstick
-        sendAxis(parsec, dev, ev, MotionEvent.AXIS_X,  Parsec.GAMEPAD_AXIS_LX, false);
-        sendAxis(parsec, dev, ev, MotionEvent.AXIS_Y,  Parsec.GAMEPAD_AXIS_LY, false);
+        sendAxis(parsec, gamepadId, dev, ev,
+                MotionEvent.AXIS_X, Parsec.GAMEPAD_AXIS_LX, false);
+        sendAxis(parsec, gamepadId, dev, ev,
+                MotionEvent.AXIS_Y, Parsec.GAMEPAD_AXIS_LY, false);
         // Right thumbstick — Android exposes RX/RY on most controllers, but
         // some (older Xbox, certain phone controllers) use Z/RZ instead.
         // Try RX/RY first, fall back to Z/RZ if those axes don't exist.
         if (hasAxis(dev, MotionEvent.AXIS_RX) || hasAxis(dev, MotionEvent.AXIS_RY)) {
-            sendAxis(parsec, dev, ev, MotionEvent.AXIS_RX, Parsec.GAMEPAD_AXIS_RX, false);
-            sendAxis(parsec, dev, ev, MotionEvent.AXIS_RY, Parsec.GAMEPAD_AXIS_RY, false);
+            sendAxis(parsec, gamepadId, dev, ev,
+                    MotionEvent.AXIS_RX, Parsec.GAMEPAD_AXIS_RX, false);
+            sendAxis(parsec, gamepadId, dev, ev,
+                    MotionEvent.AXIS_RY, Parsec.GAMEPAD_AXIS_RY, false);
         } else {
-            sendAxis(parsec, dev, ev, MotionEvent.AXIS_Z,  Parsec.GAMEPAD_AXIS_RX, false);
-            sendAxis(parsec, dev, ev, MotionEvent.AXIS_RZ, Parsec.GAMEPAD_AXIS_RY, false);
+            sendAxis(parsec, gamepadId, dev, ev,
+                    MotionEvent.AXIS_Z, Parsec.GAMEPAD_AXIS_RX, false);
+            sendAxis(parsec, gamepadId, dev, ev,
+                    MotionEvent.AXIS_RZ, Parsec.GAMEPAD_AXIS_RY, false);
         }
 
         // Triggers — Android may expose them as LTRIGGER/RTRIGGER (0..1) or
         // packed onto BRAKE/GAS. The trigger axes ride a 0..1 range, NOT
         // -1..1 like the sticks, so they get a different normalizer.
-        sendTrigger(parsec, dev, ev,
+        sendTrigger(parsec, gamepadId, dev, ev,
                 MotionEvent.AXIS_LTRIGGER, MotionEvent.AXIS_BRAKE,
                 Parsec.GAMEPAD_AXIS_TRIGGERL);
-        sendTrigger(parsec, dev, ev,
+        sendTrigger(parsec, gamepadId, dev, ev,
                 MotionEvent.AXIS_RTRIGGER, MotionEvent.AXIS_GAS,
                 Parsec.GAMEPAD_AXIS_TRIGGERR);
 
         // HAT axes on many controllers represent the DPad. -1/0/+1.
-        float hatX = ev.getAxisValue(MotionEvent.AXIS_HAT_X);
-        float hatY = ev.getAxisValue(MotionEvent.AXIS_HAT_Y);
-        dispatchHat(parsec, hatX, hatY);
+        // Do not manufacture a neutral HAT update for devices that do not
+        // expose these axes; that used to release another controller's D-pad.
+        if (hasAxis(dev, MotionEvent.AXIS_HAT_X)
+                || hasAxis(dev, MotionEvent.AXIS_HAT_Y)) {
+            float hatX = ev.getAxisValue(MotionEvent.AXIS_HAT_X);
+            float hatY = ev.getAxisValue(MotionEvent.AXIS_HAT_Y);
+            dispatchHat(parsec, state, hatX, hatY);
+        }
 
         return true;
     }
 
-    /** Disconnect the physical gamepad from the host (releases all buttons /
-     *  zeroes axes). Call from onPause to avoid leaving "stuck" inputs on
-     *  the host when the user backgrounds the app. */
+    /** Disconnect one Android controller without disturbing any other pad. */
+    public static void unplugDevice(Parsec parsec, int androidDeviceId) {
+        DeviceState state = DEVICE_STATES.get(androidDeviceId);
+        if (state == null) return;
+        if (parsec != null) {
+            try { parsec.clientSendGamepadUnplug(state.parsecGamepadId); }
+            catch (Throwable ignored) {}
+        }
+        DEVICE_STATES.remove(androidDeviceId);
+    }
+
+    /** Disconnect every physical pad and clear all per-device input state. */
     public static void unplug(Parsec parsec) {
-        if (parsec == null) return;
-        try { parsec.clientSendGamepadUnplug(PHYSICAL_GAMEPAD_ID); } catch (Throwable ignored) {}
+        for (int i = 0; i < DEVICE_STATES.size(); i++) {
+            DeviceState state = DEVICE_STATES.valueAt(i);
+            if (parsec != null) {
+                try { parsec.clientSendGamepadUnplug(state.parsecGamepadId); }
+                catch (Throwable ignored) {}
+            }
+        }
+        DEVICE_STATES.clear();
     }
 
     // -------------------- internals --------------------
+
+    private static DeviceState stateFor(int androidDeviceId, InputDevice device) {
+        DeviceState state = DEVICE_STATES.get(androidDeviceId);
+        if (state != null) return state;
+        state = new DeviceState(nextAvailableParsecId());
+        DEVICE_STATES.put(androidDeviceId, state);
+        Log.i("GamepadInput", "Mapped Android device " + androidDeviceId
+                + " (" + (device == null ? "unknown" : device.getName())
+                + ") to Parsec gamepad " + state.parsecGamepadId);
+        return state;
+    }
+
+    private static int nextAvailableParsecId() {
+        int candidate = FIRST_PHYSICAL_GAMEPAD_ID;
+        while (true) {
+            boolean used = false;
+            for (int i = 0; i < DEVICE_STATES.size(); i++) {
+                if (DEVICE_STATES.valueAt(i).parsecGamepadId == candidate) {
+                    used = true;
+                    break;
+                }
+            }
+            if (!used) return candidate;
+            candidate++;
+        }
+    }
 
     private static boolean hasAxis(InputDevice dev, int axis) {
         if (dev == null) return false;
@@ -101,8 +179,10 @@ public final class GamepadInputHandler {
         return r != null;
     }
 
-    private static void sendAxis(Parsec parsec, InputDevice dev, MotionEvent ev,
-                                 int androidAxis, int parsecAxis, boolean invertY) {
+    private static void sendAxis(Parsec parsec, int gamepadId,
+                                 InputDevice dev, MotionEvent ev,
+                                 int androidAxis, int parsecAxis,
+                                 boolean invertY) {
         if (dev == null) return;
         InputDevice.MotionRange r = dev.getMotionRange(androidAxis);
         if (r == null) return;
@@ -114,10 +194,11 @@ public final class GamepadInputHandler {
         int scaled = Math.round(raw * 32767f);
         if (scaled > 32767) scaled = 32767;
         if (scaled < -32768) scaled = -32768;
-        parsec.clientSendGamepadAxis(PHYSICAL_GAMEPAD_ID, parsecAxis, scaled);
+        parsec.clientSendGamepadAxis(gamepadId, parsecAxis, scaled);
     }
 
-    private static void sendTrigger(Parsec parsec, InputDevice dev, MotionEvent ev,
+    private static void sendTrigger(Parsec parsec, int gamepadId,
+                                    InputDevice dev, MotionEvent ev,
                                     int primaryAxis, int fallbackAxis, int parsecAxis) {
         if (dev == null) return;
         float raw = 0f;
@@ -136,40 +217,38 @@ public final class GamepadInputHandler {
         int scaled = Math.round(raw * 32767f);
         if (scaled < 0) scaled = 0;
         if (scaled > 32767) scaled = 32767;
-        parsec.clientSendGamepadAxis(PHYSICAL_GAMEPAD_ID, parsecAxis, scaled);
+        parsec.clientSendGamepadAxis(gamepadId, parsecAxis, scaled);
     }
 
-    // Track previous HAT state so we emit press / release pairs only on edge.
-    private static int lastHatX = 0, lastHatY = 0;
-
-    private static void dispatchHat(Parsec parsec, float hx, float hy) {
+    private static void dispatchHat(
+            Parsec parsec, DeviceState state, float hx, float hy) {
         int hxI = hx > 0.5f ? 1 : (hx < -0.5f ? -1 : 0);
         int hyI = hy > 0.5f ? 1 : (hy < -0.5f ? -1 : 0);
-        if (hxI != lastHatX) {
-            if (lastHatX != 0) {
-                parsec.clientSendGamepadButton(PHYSICAL_GAMEPAD_ID,
-                        lastHatX > 0 ? Parsec.GAMEPAD_BUTTON_DPAD_RIGHT
+        if (hxI != state.lastHatX) {
+            if (state.lastHatX != 0) {
+                parsec.clientSendGamepadButton(state.parsecGamepadId,
+                        state.lastHatX > 0 ? Parsec.GAMEPAD_BUTTON_DPAD_RIGHT
                                      : Parsec.GAMEPAD_BUTTON_DPAD_LEFT, false);
             }
             if (hxI != 0) {
-                parsec.clientSendGamepadButton(PHYSICAL_GAMEPAD_ID,
+                parsec.clientSendGamepadButton(state.parsecGamepadId,
                         hxI > 0 ? Parsec.GAMEPAD_BUTTON_DPAD_RIGHT
                                 : Parsec.GAMEPAD_BUTTON_DPAD_LEFT, true);
             }
-            lastHatX = hxI;
+            state.lastHatX = hxI;
         }
-        if (hyI != lastHatY) {
-            if (lastHatY != 0) {
-                parsec.clientSendGamepadButton(PHYSICAL_GAMEPAD_ID,
-                        lastHatY > 0 ? Parsec.GAMEPAD_BUTTON_DPAD_DOWN
+        if (hyI != state.lastHatY) {
+            if (state.lastHatY != 0) {
+                parsec.clientSendGamepadButton(state.parsecGamepadId,
+                        state.lastHatY > 0 ? Parsec.GAMEPAD_BUTTON_DPAD_DOWN
                                      : Parsec.GAMEPAD_BUTTON_DPAD_UP, false);
             }
             if (hyI != 0) {
-                parsec.clientSendGamepadButton(PHYSICAL_GAMEPAD_ID,
+                parsec.clientSendGamepadButton(state.parsecGamepadId,
                         hyI > 0 ? Parsec.GAMEPAD_BUTTON_DPAD_DOWN
                                 : Parsec.GAMEPAD_BUTTON_DPAD_UP, true);
             }
-            lastHatY = hyI;
+            state.lastHatY = hyI;
         }
     }
 

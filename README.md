@@ -21,6 +21,8 @@ The upstream Android APK may already run on a Quest when sideloaded.
   hold B = Ctrl+Alt+Delete
 - maps the right Touch thumbstick to mouse-wheel scrolling and its press to
   a held middle-mouse button
+- isolates Quest Touch input from paired gamepads so their axes, buttons, and
+  D-pad state cannot overwrite each other
 - prevents accidental movement of the keyboard and settings buttons: tap to
   open, or hold for one second before dragging
 - keeps rendering and absolute input on the same measured GL viewport across
@@ -74,13 +76,13 @@ Requirements:
 The APK is written to:
 
 ```text
-app/build/outputs/apk/release/openparsec-quest2-0.4.6-quest-release.apk
+app/build/outputs/apk/release/openparsec-quest2-0.4.7-quest-release.apk
 ```
 
 With developer mode and ADB available, install it using:
 
 ```bash
-adb install -r app/build/outputs/apk/release/openparsec-quest2-0.4.6-quest-release.apk
+adb install -r app/build/outputs/apk/release/openparsec-quest2-0.4.7-quest-release.apk
 ```
 
 ## Credits

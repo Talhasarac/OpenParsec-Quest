@@ -102,18 +102,20 @@ public class ParsecActivity extends Activity {
         sendCtrlAltDel();
         Toast.makeText(this, "Sent Ctrl+Alt+Delete", Toast.LENGTH_SHORT).show();
     };
-    private final InputManager.InputDeviceListener questInputDeviceListener =
+    private final InputManager.InputDeviceListener inputDeviceListener =
             new InputManager.InputDeviceListener() {
                 @Override public void onInputDeviceAdded(int deviceId) {}
                 @Override public void onInputDeviceChanged(int deviceId) {
                     if (deviceId == questScrollDeviceId || deviceId == questMiddleDeviceId) {
                         resetQuestMouseShortcuts();
                     }
+                    GamepadInputHandler.unplugDevice(parsec, deviceId);
                 }
                 @Override public void onInputDeviceRemoved(int deviceId) {
                     if (deviceId == questScrollDeviceId || deviceId == questMiddleDeviceId) {
                         resetQuestMouseShortcuts();
                     }
+                    GamepadInputHandler.unplugDevice(parsec, deviceId);
                 }
             };
     /** When the IME pushes a user-positioned mouse row out of the way, we
@@ -208,7 +210,7 @@ public class ParsecActivity extends Activity {
         inputManager = (InputManager) getSystemService(Context.INPUT_SERVICE);
         if (inputManager != null) {
             inputManager.registerInputDeviceListener(
-                    questInputDeviceListener, questShortcutHandler);
+                    inputDeviceListener, questShortcutHandler);
         }
         applyOrientationFromSettings();
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -907,6 +909,7 @@ public class ParsecActivity extends Activity {
         statusView.setText("Reconnecting…");
         statusView.setVisibility(View.VISIBLE);
         resetQuestMouseShortcuts();
+        GamepadInputHandler.unplug(parsec);
 
         // KEEP THE GL SURFACE ALIVE across reconnects. Tearing it down and
         // recreating it forces a new EGL context, and the Parsec SDK's cached
@@ -1021,7 +1024,9 @@ public class ParsecActivity extends Activity {
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
         if (handleQuestControllerShortcut(event)) return true;
-        // Forward physical gamepad button presses straight to Parsec.
+        // GamepadInputHandler rejects Touch devices. Unhandled Touch buttons
+        // continue through Android/Horizon instead of contaminating a paired
+        // Bluetooth controller's host-side state.
         if (GamepadInputHandler.handleKeyEvent(parsec, event)) return true;
         return super.dispatchKeyEvent(event);
     }
@@ -1029,7 +1034,7 @@ public class ParsecActivity extends Activity {
     @Override
     public boolean dispatchGenericMotionEvent(MotionEvent ev) {
         if (handleQuestRightStickScroll(ev)) return true;
-        // Forward physical gamepad stick / trigger axis updates.
+        // Only non-Touch physical gamepads are forwarded from this point.
         if (GamepadInputHandler.handleMotionEvent(parsec, ev)) return true;
         return super.dispatchGenericMotionEvent(ev);
     }
@@ -2152,8 +2157,9 @@ public class ParsecActivity extends Activity {
     @Override
     protected void onDestroy() {
         resetQuestMouseShortcuts();
+        GamepadInputHandler.unplug(parsec);
         if (inputManager != null) {
-            inputManager.unregisterInputDeviceListener(questInputDeviceListener);
+            inputManager.unregisterInputDeviceListener(inputDeviceListener);
             inputManager = null;
         }
         stopHealthWatchdog();
