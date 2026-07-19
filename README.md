@@ -74,7 +74,8 @@ For my other projects, check out [my website][website] and [my discord][discord]
 
 ## Download
 
-Grab the latest signed APK from [Releases](../../releases/latest) and side-load it.
+The upstream Android phone build is available from
+[NomadsGalaxy's releases](https://github.com/nomadsgalaxy/OpenParsec/releases/latest).
 You may need to enable *Install unknown apps* for your browser or file manager.
 
 The app has a built-in update checker that polls this repository's
@@ -140,5 +141,6 @@ binaries are redistributed under their original Parsec terms.
   that this port mirrors design-wise
 - [Parsec](https://parsec.app) — the underlying remote-desktop SDK
 
-The iOS source from before the Android rewrite is preserved on the
-[`ios-legacy`](../../tree/ios-legacy) branch.
+The iOS source from before the Android rewrite is preserved on the upstream
+[`ios-legacy`](https://github.com/nomadsgalaxy/OpenParsec/tree/ios-legacy)
+branch.
