@@ -38,20 +38,27 @@ jobs:
         id: rename
         run: |
           mkdir -p dist
-          cp app/build/outputs/apk/release/app-release.apk \
-             dist/openparsec-android-${{ github.ref_name }}.apk
-          echo "apk=dist/openparsec-android-${{ github.ref_name }}.apk" >> "$GITHUB_OUTPUT"
+          shopt -s nullglob
+          apks=(app/build/outputs/apk/release/*-release.apk)
+          if [[ ${#apks[@]} -ne 1 ]]; then
+            echo "Expected exactly one release APK, found ${#apks[@]}" >&2
+            printf '  %s\n' "${apks[@]}" >&2
+            exit 1
+          fi
+          output="dist/openparsec-quest2-${{ github.ref_name }}.apk"
+          cp "${apks[0]}" "$output"
+          echo "apk=$output" >> "$GITHUB_OUTPUT"
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ steps.rename.outputs.apk }}
           generate_release_notes: true
-          name: OpenParsec for Android ${{ github.ref_name }}
+          name: OpenParsec Quest 2 ${{ github.ref_name }}
           body: |
-            ## OpenParsec for Android ${{ github.ref_name }}
+            ## OpenParsec Quest 2 ${{ github.ref_name }}
 
-            Side-load `openparsec-android-${{ github.ref_name }}.apk` on any
-            Android 8.1+ device. The in-app update checker (polls this repo's
+            Side-load `openparsec-quest2-${{ github.ref_name }}.apk` on a
+            Quest 2 or compatible Android 9+ ARM64 device. The in-app update checker (polls this repo's
             `releases/latest` once per 24h) will notify users when a newer
             version is published here.
