@@ -182,7 +182,7 @@ void aaudio_resume(struct aaudio *ctx)
     }
 }
 
-void aaudio_play(int16_t *pcm, uint32_t frames, void *opaque)
+void aaudio_play(const int16_t *pcm, uint32_t frames, void *opaque)
 {
     struct aaudio *ctx = (struct aaudio *) opaque;
     if (!ctx || !ctx->stream || ctx->paused)

@@ -61,8 +61,14 @@ public final class Settings {
     public float scrollSensitivity() { return sp.getFloat("scrollSensitivity", 4.0f); }
     public void scrollSensitivity(float v) { sp.edit().putFloat("scrollSensitivity", v).apply(); }
 
-    public String decoder() { return sp.getString("decoder", DECODER_H264); }
-    public void decoder(String v) { sp.edit().putString("decoder", v).apply(); }
+    public String decoder() {
+        String value = sp.getString("decoder", DECODER_H264);
+        return DECODER_H265.equals(value) ? DECODER_H265 : DECODER_H264;
+    }
+    public void decoder(String v) {
+        if (DECODER_H264.equals(v) || DECODER_H265.equals(v))
+            sp.edit().putString("decoder", v).apply();
+    }
 
     /** Quest defaults to 1080p: sharp enough for a large virtual screen while
      *  staying comfortably inside Quest 2's low-latency H.264 decode budget. */
@@ -124,13 +130,14 @@ public final class Settings {
         return RESOLUTIONS_H[idx];
     }
 
-    /** Requested host refresh rate (Hz), or 0 for "Auto" (leave host unchanged). */
-    public int configRefreshRate() {
+    /** Requested host encoder frame rate, or 0 for "Auto" (leave unchanged). */
+    public int configFrameRate() {
         int fps = preferredFps();
         return fps <= 0 ? 0 : fps;
     }
 
     public int decoderSoftwareFlag() { return decoderCompatibility() ? 1 : 0; }
+    public int decoderH265Flag() { return DECODER_H265.equals(decoder()) ? 1 : 0; }
 
     public boolean noOverlay() { return sp.getBoolean("noOverlay", false); }
     public void noOverlay(boolean v) { sp.edit().putBoolean("noOverlay", v).apply(); }

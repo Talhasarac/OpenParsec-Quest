@@ -111,8 +111,8 @@ public final class SettingsPanel {
                 new int[]{0, 1, 2, 3, 4},
                 s.resolutionIndex(), s::resolutionIndex));
         addDivider(a, graphics);
-        graphics.addView(rowPickerInt(a, "Host Refresh Rate",
-                new String[]{"Auto", "120 Hz", "60 Hz", "30 Hz"},
+        graphics.addView(rowPickerInt(a, "Host Frame Rate",
+                new String[]{"Auto", "120 FPS", "60 FPS", "30 FPS"},
                 new int[]{0, 120, 60, 30},
                 s.preferredFps(), s::preferredFps));
         addDivider(a, graphics);
@@ -121,19 +121,24 @@ public final class SettingsPanel {
                 Settings.BANDWIDTH_VALUES,
                 s.bandwidthMbps(), s::bandwidthMbps));
         addDivider(a, graphics);
-        graphics.addView(rowToggle(a, "Constant FPS",
-                s.constantFps(), s::constantFps));
-        addDivider(a, graphics);
-        // Honest note: resolution/refresh only apply when you're the owner of
-        // the host PC connecting first (i.e. streaming your own machine).
-        graphics.addView(rowNote(a,
-                "Resolution, refresh, bandwidth, and Constant FPS require the "
-                + "host to accept owner video settings. Constant FPS keeps "
-                + "encoding active on static screens and may use more data. "
-                + "Host Default leaves bandwidth unchanged."));
+        graphics.addView(rowPicker(a, "Codec",
+                new String[]{"H.264", "Prefer H.265"},
+                new String[]{Settings.DECODER_H264, Settings.DECODER_H265},
+                s.decoder(), s::decoder));
         addDivider(a, graphics);
         graphics.addView(rowToggle(a, "Force Software Decoder",
                 s.decoderCompatibility(), s::decoderCompatibility));
+        addDivider(a, graphics);
+        graphics.addView(rowToggle(a, "Constant FPS",
+                s.constantFps(), s::constantFps));
+        addDivider(a, graphics);
+        graphics.addView(rowNote(a,
+                "Resolution, frame rate, bandwidth, and Constant FPS require the "
+                + "host to accept owner video settings. Constant FPS keeps "
+                + "encoding active on static screens and may use more data. "
+                + "Prefer H.265 automatically falls back to H.264 when the "
+                + "host or another client cannot use HEVC. Host Default leaves "
+                + "bandwidth unchanged."));
         addDivider(a, graphics);
         graphics.addView(rowToggle(a, "Show Performance Stats",
                 s.showStats(), s::showStats));

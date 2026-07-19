@@ -20,13 +20,15 @@ public class Parsec {
     public native void init();
     public native void destroy();
     /** Connect with explicit client config. decoderSoftware forces software
-     *  decode; resolutionX/Y + refreshRate request a host resolution (only
+     *  decode; decoderH265 prefers HEVC with automatic H.264 fallback;
+     *  resolutionX/Y request a host resolution (only
      *  honored when this client is the owner's first connection — i.e. you're
-     *  streaming your own PC). Pass 0 for resolution/refresh to leave the host
-     *  untouched. */
+     *  streaming your own PC). Pass 0 for resolution to leave it untouched. */
     public native int clientConnect(String sessionID, String peerID,
-                                    int decoderSoftware,
-                                    int resolutionX, int resolutionY, int refreshRate);
+                                    int decoderSoftware, int decoderH265,
+                                    int resolutionX, int resolutionY);
+    /** Apply decoder and codec preferences to the active stream. */
+    public native int clientSetDecoder(int decoderSoftware, int decoderH265);
     public native void clientPollAudio();
     public native void clientPauseAudio();
     /** Discard audio accumulated while backgrounded, restart output, and
@@ -56,6 +58,7 @@ public class Parsec {
     public native float clientGetNetworkLatency();  // ms (round-trip)
     public native float clientGetEncodeLatency();   // ms
     public native boolean clientDecoderFellBack();  // true if SW-decode fallback occurred
+    public native boolean clientIsH265();            // actual negotiated stream codec
 
     // ---- Client event pump (call once per render frame) ----
     /** Drain pending client events (cursor mode, rumble, host user-data). */

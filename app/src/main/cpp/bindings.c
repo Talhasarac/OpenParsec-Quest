@@ -19,6 +19,7 @@ static volatile int g_cursorRelative = 0;   // host requested relative (pointer-
 static volatile int g_rumbleBig = 0;        // last large-motor rumble value (0-255)
 static volatile int g_rumbleSmall = 0;      // last small-motor rumble value (0-255)
 static volatile int g_rumbleNew = 0;        // 1 if an unconsumed rumble event is pending
+static volatile int g_requestedSoftwareDecoder = 0;
 static pthread_mutex_t g_clipLock = PTHREAD_MUTEX_INITIALIZER;
 static char *g_pendingClipboard = NULL;     // owned malloc'd copy of latest host user-data text
 static char *g_pendingVideoConfig = NULL;   // owned copy of user-data message 11
@@ -28,7 +29,7 @@ static char *g_pendingVideoConfig = NULL;   // owned copy of user-data message 1
 #define CLIPBOARD_MSG_ID 1
 #define VIDEO_CONFIG_MSG_ID 11
 
-static void logCallback(ParsecLogLevel level, char *msg, void *opaque)
+static void logCallback(ParsecLogLevel level, const char *msg, void *opaque)
 {
     __android_log_print(ANDROID_LOG_INFO, "PARSEC", "%s", msg);
 }
@@ -88,28 +89,29 @@ Java_parsec_bindings_Parsec_destroy(JNIEnv *env, jobject instance)
 
 JNIEXPORT jint JNICALL
 Java_parsec_bindings_Parsec_clientConnect(JNIEnv *env, jobject instance, jstring sessionID,
-    jstring peerID, jint decoderSoftware, jint resolutionX, jint resolutionY, jint refreshRate)
+    jstring peerID, jint decoderSoftware, jint decoderH265, jint resolutionX, jint resolutionY)
 {
     Parsec *parsec = getPointer(env, instance, "parsec");
 
     const char *cSessionID = (*env)->GetStringUTFChars(env, sessionID, 0);
     const char *cPeerID = (*env)->GetStringUTFChars(env, peerID, 0);
 
-    // Build a real ParsecClientConfig instead of passing NULL so the user's
-    // Settings actually reach the SDK. NOTE: resolutionX/Y + refreshRate only
-    // take effect when this client is the FIRST connection AND the owner of a
-    // HOST_DESKTOP machine (per the SDK docs) — i.e. when streaming your own
-    // PC. They're harmlessly ignored otherwise. Bitrate / H.265 / encoder-FPS
-    // are host-side encoder settings (ParsecHostConfig) with no client field,
-    // so they are intentionally NOT here.
+    // The 2021 SDK exposes one video config per stream. decoderH265 is a
+    // client capability/preference: the host falls back to H.264 if HEVC is
+    // unsupported by any participant.
     ParsecClientConfig cfg = {0};
-    cfg.mediaContainer = CONTAINER_PARSEC; // native decode path
-    cfg.protocol = PROTO_MODE_BUD;         // Parsec's low-latency transport
-    cfg.decoderSoftware = decoderSoftware ? 1 : 0;
-    cfg.resolutionX = resolutionX;
-    cfg.resolutionY = resolutionY;
-    cfg.refreshRate = refreshRate;
-    cfg.pngCursor = false;                 // we render our own cursor
+    for (uint8_t stream = 0; stream < NUM_VSTREAMS; stream++) {
+        cfg.video[stream].decoderIndex = decoderSoftware ? 0 : 1;
+        cfg.video[stream].resolutionX = resolutionX;
+        cfg.video[stream].resolutionY = resolutionY;
+        cfg.video[stream].decoderCompatibility = false;
+        cfg.video[stream].decoderH265 = decoderH265 ? true : false;
+        cfg.video[stream].decoder444 = false;
+    }
+    cfg.mediaContainer = CONTAINER_PARSEC;
+    cfg.protocol = PROTO_MODE_BUD;
+    cfg.pngCursor = false;
+    g_requestedSoftwareDecoder = decoderSoftware ? 1 : 0;
 
     // Fresh session — clear any stale event state.
     g_cursorRelative = 0;
@@ -127,6 +129,30 @@ Java_parsec_bindings_Parsec_clientConnect(JNIEnv *env, jobject instance, jstring
     (*env)->ReleaseStringUTFChars(env, peerID, cPeerID);
 
     return (jint) e;
+}
+
+JNIEXPORT jint JNICALL
+Java_parsec_bindings_Parsec_clientSetDecoder(JNIEnv *env, jobject instance,
+    jint decoderSoftware, jint decoderH265)
+{
+    Parsec *parsec = getPointer(env, instance, "parsec");
+    if (!parsec)
+        return (jint) PARSEC_NOT_RUNNING;
+
+    ParsecClientConfig cfg = {0};
+    for (uint8_t stream = 0; stream < NUM_VSTREAMS; stream++) {
+        cfg.video[stream].decoderIndex = decoderSoftware ? 0 : 1;
+        cfg.video[stream].decoderCompatibility = false;
+        cfg.video[stream].decoderH265 = decoderH265 ? true : false;
+        cfg.video[stream].decoder444 = false;
+    }
+    cfg.mediaContainer = CONTAINER_PARSEC;
+    cfg.protocol = PROTO_MODE_BUD;
+    cfg.pngCursor = false;
+    ParsecStatus status = ParsecClientSetConfig(parsec, &cfg);
+    if (status == PARSEC_OK)
+        g_requestedSoftwareDecoder = decoderSoftware ? 1 : 0;
+    return (jint) status;
 }
 
 JNIEXPORT void JNICALL
@@ -157,7 +183,7 @@ Java_parsec_bindings_Parsec_clientPauseAudio(JNIEnv *env, jobject instance)
     aaudio_pause(aaudio);
 }
 
-static void discard_audio(int16_t *pcm, uint32_t frames, void *opaque)
+static void discard_audio(const int16_t *pcm, uint32_t frames, void *opaque)
 {
     (void) pcm;
     (void) frames;
@@ -199,14 +225,14 @@ Java_parsec_bindings_Parsec_clientSetDimensions(JNIEnv *env, jobject instance,
     jint x, jint y)
 {
     Parsec *parsec = getPointer(env, instance, "parsec");
-    ParsecClientSetDimensions(parsec, (uint32_t) x, (uint32_t) y, 1.0f);
+    ParsecClientSetDimensions(parsec, 0, (uint32_t) x, (uint32_t) y, 1.0f);
 }
 
 JNIEXPORT void JNICALL
 Java_parsec_bindings_Parsec_clientGLRenderFrame(JNIEnv *env, jobject instance)
 {
     Parsec *parsec = getPointer(env, instance, "parsec");
-    ParsecClientGLRenderFrame(parsec, 0);
+    ParsecClientGLRenderFrame(parsec, 0, NULL, NULL, 0);
 }
 
 JNIEXPORT jint JNICALL
@@ -334,8 +360,8 @@ Java_parsec_bindings_Parsec_clientGetFreezeSignal(JNIEnv *env, jobject instance)
     if (!parsec) return 0;
     ParsecClientStatus status = {0};
     if (ParsecClientGetStatus(parsec, &status) != PARSEC_OK) return 0;
-    jlong dec = (jlong) (status.metrics.decodeLatency * 1000.0f);
-    jlong net = (jlong) (status.metrics.networkLatency * 1000.0f);
+    jlong dec = (jlong) (status.self.metrics[0].decodeLatency * 1000.0f);
+    jlong net = (jlong) (status.self.metrics[0].networkLatency * 1000.0f);
     return (dec << 32) | (net & 0xFFFFFFFFL);
 }
 
@@ -347,7 +373,7 @@ Java_parsec_bindings_Parsec_clientGetDecodeLatency(JNIEnv *env, jobject instance
     if (!parsec) return 0.0f;
     ParsecClientStatus status = {0};
     if (ParsecClientGetStatus(parsec, &status) != PARSEC_OK) return 0.0f;
-    return status.metrics.decodeLatency;
+    return status.self.metrics[0].decodeLatency;
 }
 
 JNIEXPORT jfloat JNICALL
@@ -357,7 +383,7 @@ Java_parsec_bindings_Parsec_clientGetNetworkLatency(JNIEnv *env, jobject instanc
     if (!parsec) return 0.0f;
     ParsecClientStatus status = {0};
     if (ParsecClientGetStatus(parsec, &status) != PARSEC_OK) return 0.0f;
-    return status.metrics.networkLatency;
+    return status.self.metrics[0].networkLatency;
 }
 
 JNIEXPORT jfloat JNICALL
@@ -367,7 +393,7 @@ Java_parsec_bindings_Parsec_clientGetEncodeLatency(JNIEnv *env, jobject instance
     if (!parsec) return 0.0f;
     ParsecClientStatus status = {0};
     if (ParsecClientGetStatus(parsec, &status) != PARSEC_OK) return 0.0f;
-    return status.metrics.encodeLatency;
+    return status.self.metrics[0].encodeLatency;
 }
 
 JNIEXPORT jboolean JNICALL
@@ -377,7 +403,19 @@ Java_parsec_bindings_Parsec_clientDecoderFellBack(JNIEnv *env, jobject instance)
     if (!parsec) return JNI_FALSE;
     ParsecClientStatus status = {0};
     if (ParsecClientGetStatus(parsec, &status) != PARSEC_OK) return JNI_FALSE;
-    return status.decoderFallback ? JNI_TRUE : JNI_FALSE;
+    return !g_requestedSoftwareDecoder
+        && status.decoder[0].width > 0
+        && status.decoder[0].index == 0 ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_parsec_bindings_Parsec_clientIsH265(JNIEnv *env, jobject instance)
+{
+    Parsec *parsec = getPointer(env, instance, "parsec");
+    if (!parsec) return JNI_FALSE;
+    ParsecClientStatus status = {0};
+    if (ParsecClientGetStatus(parsec, &status) != PARSEC_OK) return JNI_FALSE;
+    return status.decoder[0].h265 ? JNI_TRUE : JNI_FALSE;
 }
 
 /* ---- Client event pump. Called from the GL render thread once per frame.
@@ -393,8 +431,7 @@ Java_parsec_bindings_Parsec_clientPollEvents(JNIEnv *env, jobject instance)
     while (ParsecClientPollEvents(parsec, 0, &evt)) {
         switch (evt.type) {
             case CLIENT_EVENT_CURSOR:
-                if (evt.cursor.cursor.modeUpdate)
-                    g_cursorRelative = evt.cursor.cursor.relative ? 1 : 0;
+                g_cursorRelative = evt.cursor.cursor.relative ? 1 : 0;
                 // We render our own cursor, so drain any image buffer to
                 // avoid leaking it.
                 if (evt.cursor.cursor.imageUpdate && evt.cursor.key) {

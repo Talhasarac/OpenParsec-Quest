@@ -671,17 +671,19 @@ public class ParsecActivity extends Activity {
             lastFpsSampleMs = now;
         }
         float dec, net, enc;
-        boolean fellBack;
+        boolean fellBack, h265;
         try {
             dec = parsec.clientGetDecodeLatency();
             net = parsec.clientGetNetworkLatency();
             enc = parsec.clientGetEncodeLatency();
             fellBack = parsec.clientDecoderFellBack();
+            h265 = parsec.clientIsH265();
         } catch (Throwable t) { return; }
 
         StringBuilder sb = new StringBuilder();
         sb.append(String.format(java.util.Locale.US,
-                "%d fps  ping %.0fms\ndec %.1fms  enc %.1fms", currentFps, net, dec, enc));
+                "%d fps  %s  ping %.0fms\ndec %.1fms  enc %.1fms",
+                currentFps, h265 ? "H.265" : "H.264", net, dec, enc));
         if (fellBack) sb.append("  [SW decode]");
         // Inline warnings — colorize red when degraded.
         boolean warn = net > 80f || dec > 30f || fellBack;
@@ -1337,14 +1339,14 @@ public class ParsecActivity extends Activity {
     }
 
     /** Single choke point for clientConnect so the user's Settings
-     *  (software-decode + requested host resolution/refresh) are applied
+     *  (codec, software-decode, and requested host resolution) are applied
      *  consistently on the initial connect, retries, and reconnects. */
     private int connectWithConfig(Parsec p, String sessionId, String peerId) {
         return p.clientConnect(sessionId, peerId,
                 settings.decoderSoftwareFlag(),
+                settings.decoderH265Flag(),
                 settings.configResolutionX(),
-                settings.configResolutionY(),
-                settings.configRefreshRate());
+                settings.configResolutionY());
     }
 
     /**
@@ -1370,11 +1372,12 @@ public class ParsecActivity extends Activity {
                     settings.configResolutionX(),
                     settings.configResolutionY(),
                     bandwidth,
-                    settings.constantFps()));
+                    settings.constantFps(),
+                    settings.configFrameRate()));
             // Match the schema used by the official client. Inactive outputs
             // retain neutral defaults and do not select a physical display.
-            video.put(hostVideoEntry(0, 0, 50, false));
-            video.put(hostVideoEntry(0, 0, 50, false));
+            video.put(hostVideoEntry(0, 0, 50, false, 0));
+            video.put(hostVideoEntry(0, 0, 50, false, 0));
 
             JSONObject config = new JSONObject();
             config.put("virtualMicrophone", 0);
@@ -1402,6 +1405,7 @@ public class ParsecActivity extends Activity {
     private void applySettingsToHostVideoConfig(String rawConfig) {
         if (parsec == null || settings == null) return;
         int bandwidth = settings.bandwidthMbps();
+        int frameRate = settings.configFrameRate();
 
         try {
             JSONObject config = new JSONObject(rawConfig);
@@ -1414,6 +1418,8 @@ public class ParsecActivity extends Activity {
             }
             if (bandwidth > 0)
                 active.put("encoderMaxBitrate", bandwidth);
+            if (frameRate > 0)
+                active.put("encoderFPS", frameRate);
             active.put("fullFPS", settings.constantFps());
             int status = parsec.clientSendUserData(
                     Parsec.VIDEO_CONFIG_MSG_ID, config.toString());
@@ -1460,10 +1466,10 @@ public class ParsecActivity extends Activity {
     }
 
     private static JSONObject hostVideoEntry(
-            int width, int height, int bandwidth, boolean constantFps)
+            int width, int height, int bandwidth, boolean constantFps, int frameRate)
             throws org.json.JSONException {
         JSONObject entry = new JSONObject();
-        entry.put("encoderFPS", 0);
+        entry.put("encoderFPS", frameRate);
         entry.put("resolutionX", width);
         entry.put("resolutionY", height);
         entry.put("fullFPS", constantFps);
@@ -1518,6 +1524,17 @@ public class ParsecActivity extends Activity {
             settingsOverlay = null;
             applySettingsToSurface();
             syncStatsHud(); // user may have toggled Show Performance Stats
+            if (parsec != null) {
+                try {
+                    int status = parsec.clientSetDecoder(
+                            settings.decoderSoftwareFlag(),
+                            settings.decoderH265Flag());
+                    if (status != parsec.PARSEC_OK)
+                        Log.w("ParsecCodec", "Could not apply decoder setting: " + status);
+                } catch (Throwable t) {
+                    Log.w("ParsecCodec", "Could not apply decoder setting", t);
+                }
+            }
             requestHostVideoConfig();
         }
     }
