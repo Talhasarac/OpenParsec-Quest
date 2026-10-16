@@ -31,12 +31,36 @@ jobs:
       - name: Grant gradlew exec permission
         run: chmod +x gradlew
 
+      - name: Restore private release keystore
+        env:
+          OPENPARSEC_KEYSTORE_BASE64: ${{ secrets.OPENPARSEC_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$OPENPARSEC_KEYSTORE_BASE64" ]]; then
+            echo "Missing OPENPARSEC_KEYSTORE_BASE64 secret. See SIGNING.md." >&2
+            exit 1
+          fi
+          umask 077
+          printf '%s' "$OPENPARSEC_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/openparsec-release.keystore"
+
       - name: Build release APK
+        env:
+          OPENPARSEC_KEYSTORE_PATH: ${{ runner.temp }}/openparsec-release.keystore
+          OPENPARSEC_STORE_PASSWORD: ${{ secrets.OPENPARSEC_STORE_PASSWORD }}
+          OPENPARSEC_KEY_ALIAS: ${{ secrets.OPENPARSEC_KEY_ALIAS }}
+          OPENPARSEC_KEY_PASSWORD: ${{ secrets.OPENPARSEC_KEY_PASSWORD }}
         run: ./gradlew assembleRelease --no-daemon
+
+      - name: Remove private release keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/openparsec-release.keystore"
 
       - name: Rename APK with version tag
         id: rename
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
+          set -euo pipefail
           mkdir -p dist
           shopt -s nullglob
           apks=(app/build/outputs/apk/release/*-release.apk)
@@ -45,7 +69,15 @@ jobs:
             printf '  %s\n' "${apks[@]}" >&2
             exit 1
           fi
-          output="dist/openparsec-quest2-${{ github.ref_name }}.apk"
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose --print-certs "${apks[0]}" > "$RUNNER_TEMP/apk-signature.txt"
+          cat "$RUNNER_TEMP/apk-signature.txt"
+          actual=$(awk '/^Signer #1 certificate SHA-256 digest:/ {print $NF}' "$RUNNER_TEMP/apk-signature.txt")
+          expected=$(tr -d '\r\n' < signing/release-certificate.sha256)
+          if [[ "$actual" != "$expected" ]]; then
+            echo "APK signing certificate does not match signing/release-certificate.sha256" >&2
+            exit 1
+          fi
+          output="dist/openparsec-quest2-${RELEASE_TAG}.apk"
           cp "${apks[0]}" "$output"
           echo "apk=$output" >> "$GITHUB_OUTPUT"
 
@@ -62,3 +94,10 @@ jobs:
             Quest 2 or compatible Android 9+ ARM64 device. The in-app update checker (polls this repo's
             `releases/latest` once per 24h) will notify users when a newer
             version is published here.
+
+            **Signing-key migration:** Releases built with the private signing
+            workflow use a new certificate. If upgrading from v0.4.9-quest or
+            earlier, save any settings you need, uninstall the old app, then
+            install this APK. Uninstalling removes local app data and login state.
+            The old public signing key is compromised and cannot prove who built
+            an APK. See [SIGNING.md](https://github.com/Talhasarac/OpenParsec-Quest/blob/quest2/SIGNING.md).

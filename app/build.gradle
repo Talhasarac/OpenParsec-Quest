@@ -1,5 +1,56 @@
 apply plugin: 'com.android.application'
 
+// Secrets are supplied by the maintainer's environment or GitHub Actions.
+// Debug builds do not need release credentials.
+def releaseSigning = [
+    storeFile: System.getenv('OPENPARSEC_KEYSTORE_PATH'),
+    storePassword: System.getenv('OPENPARSEC_STORE_PASSWORD'),
+    keyAlias: System.getenv('OPENPARSEC_KEY_ALIAS'),
+    keyPassword: System.getenv('OPENPARSEC_KEY_PASSWORD')
+]
+
+def verifyReleaseSigning = tasks.register('verifyReleaseSigning') {
+    group = 'verification'
+    description = 'Require private release credentials and reject the exposed signing key.'
+    doLast {
+        def missing = releaseSigning.findAll { key, value -> !value }.keySet()
+        if (!missing.empty) {
+            throw new GradleException("Missing release signing settings: ${missing.join(', ')}. See SIGNING.md.")
+        }
+        def keystoreFile = rootProject.file(releaseSigning.storeFile)
+        if (!keystoreFile.isFile()) {
+            throw new GradleException('Release keystore does not exist. See SIGNING.md.')
+        }
+        def keystore
+        try {
+            keystore = java.security.KeyStore.getInstance(keystoreFile, releaseSigning.storePassword.toCharArray())
+            if (!keystore.isKeyEntry(releaseSigning.keyAlias)) {
+                throw new GradleException('Release key alias must identify a private key. See SIGNING.md.')
+            }
+            if (!(keystore.getKey(releaseSigning.keyAlias, releaseSigning.keyPassword.toCharArray()) instanceof java.security.PrivateKey)) {
+                throw new GradleException('Release key alias must identify a private key. See SIGNING.md.')
+            }
+        } catch (java.security.GeneralSecurityException | IOException ignored) {
+            throw new GradleException('Cannot unlock release signing key. Check the keystore, alias and passwords. See SIGNING.md.')
+        }
+        // Compare the public key, so changing its password, alias or certificate
+        // cannot make the permanently exposed private key trusted again.
+        def publicKey = keystore.getCertificate(releaseSigning.keyAlias).publicKey.encoded
+        def publicKeySha256 = java.security.MessageDigest.getInstance('SHA-256').digest(publicKey).encodeHex().toString()
+        if (publicKeySha256 == '3cf67b3b09eb291c49627042778fdc6673e442e0969b81c3b1c673351bbaf2b1') {
+            throw new GradleException('The public OpenParsec signing key is compromised and cannot sign releases. Generate a new private key; see SIGNING.md.')
+        }
+    }
+}
+
+// Cover APKs, bundles and direct signing tasks without blocking debug builds
+// or IDE sync when the maintainer's credentials are unavailable.
+tasks.configureEach {
+    if (name == 'preReleaseBuild' || name == 'validateSigningRelease') {
+        dependsOn verifyReleaseSigning
+    }
+}
+
 android {
     namespace 'com.example.parsecdemo'
     compileSdk 34
@@ -9,8 +60,8 @@ android {
         applicationId "com.openparsec.quest"
         minSdkVersion 28
         targetSdkVersion 34
-        versionCode 13
-        versionName "0.4.9-quest"
+        versionCode 14
+        versionName "0.4.10-quest"
         setProperty("archivesBaseName", "openparsec-quest2-${versionName}")
         ndk {
             abiFilters 'arm64-v8a'
@@ -29,16 +80,10 @@ android {
     }
     signingConfigs {
         release {
-            // Stable shared keystore committed at the repo root so every
-            // release APK is signed with the SAME certificate. Without this
-            // each CI runner generated a fresh ~/.android/debug.keystore and
-            // released APKs failed update with INSTALL_FAILED_UPDATE_INCOMPATIBLE.
-            // The password is shared on purpose — this is the public sideload
-            // identity, not a production Play Store key.
-            storeFile file('../openparsec-release.keystore')
-            storePassword 'openparsec'
-            keyAlias 'openparsec'
-            keyPassword 'openparsec'
+            storeFile releaseSigning.storeFile ? rootProject.file(releaseSigning.storeFile) : null
+            storePassword releaseSigning.storePassword
+            keyAlias releaseSigning.keyAlias
+            keyPassword releaseSigning.keyPassword
         }
     }
     buildTypes {
