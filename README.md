@@ -51,6 +51,12 @@ come from the upstream Android project.
 The experimental Quest 2 APK is available from this repository's
 [GitHub Releases](https://github.com/Talhasarac/OpenParsec-Quest/releases).
 
+**Signing notice:** v0.4.9-quest and earlier used an exposed signing key. That
+certificate cannot authenticate the publisher of an APK. The private signing
+workflow replaces it; existing users must uninstall the old app before installing
+the first release with the new key, which removes local app data and login state.
+See [release signing and migration](SIGNING.md) before upgrading.
+
 This is an unofficial community build and is not affiliated with Parsec,
 Unity, Meta, NomadsGalaxy, or hugeBlack.
 
@@ -75,20 +81,25 @@ Requirements:
 - CMake 3.22.1
 
 ```bash
-./gradlew assembleRelease
+./gradlew assembleDebug
 ```
 
 The APK is written to:
 
 ```text
-app/build/outputs/apk/release/openparsec-quest2-0.4.9-quest-release.apk
+app/build/outputs/apk/debug/openparsec-quest2-0.4.9-quest-debug.apk
 ```
 
 With developer mode and ADB available, install it using:
 
 ```bash
-adb install -r app/build/outputs/apk/release/openparsec-quest2-0.4.9-quest-release.apk
+adb install -r app/build/outputs/apk/debug/openparsec-quest2-0.4.9-quest-debug.apk
 ```
+
+Debug APKs use your local Android debug key. They cannot update an installation
+signed by a different key. To build a signed release, configure private credentials
+as described in [SIGNING.md](SIGNING.md), then run `./gradlew assembleRelease`.
+Release builds fail if credentials are missing or the compromised key is supplied.
 
 ## Credits
 
