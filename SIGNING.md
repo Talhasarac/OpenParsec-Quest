@@ -28,7 +28,7 @@ D4:89:B2:5E:4B:58:EA:31:ED:8A:8F:C3:58:1F:54:4E:62:87:72:96:A9:21:C0:3C:72:0A:94
 
 The same digest is stored in `signing/release-certificate.sha256`; the release
 workflow verifies the built APK against it before publishing. This identifies
-future releases built with this workflow, not existing release assets.
+v0.4.10-quest and later releases built with this workflow, not older release assets.
 
 This migration keeps the package ID `com.openparsec.quest` and deliberately does
 not create a signing lineage from the compromised key. An APK signed with the

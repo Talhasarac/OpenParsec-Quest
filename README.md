@@ -52,8 +52,8 @@ The experimental Quest 2 APK is available from this repository's
 [GitHub Releases](https://github.com/Talhasarac/OpenParsec-Quest/releases).
 
 **Signing notice:** v0.4.9-quest and earlier used an exposed signing key. That
-certificate cannot authenticate the publisher of an APK. The private signing
-workflow replaces it; existing users must uninstall the old app before installing
+certificate cannot authenticate the publisher of an APK. v0.4.10-quest and later
+use a new private signing key; existing users must uninstall the old app before installing
 the first release with the new key, which removes local app data and login state.
 See [release signing and migration](SIGNING.md) before upgrading.
 
@@ -87,13 +87,13 @@ Requirements:
 The APK is written to:
 
 ```text
-app/build/outputs/apk/debug/openparsec-quest2-0.4.9-quest-debug.apk
+app/build/outputs/apk/debug/openparsec-quest2-0.4.10-quest-debug.apk
 ```
 
 With developer mode and ADB available, install it using:
 
 ```bash
-adb install -r app/build/outputs/apk/debug/openparsec-quest2-0.4.9-quest-debug.apk
+adb install -r app/build/outputs/apk/debug/openparsec-quest2-0.4.10-quest-debug.apk
 ```
 
 Debug APKs use your local Android debug key. They cannot update an installation
